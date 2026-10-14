@@ -54,7 +54,7 @@ def main():
         def __init__(self):
             super().__init__()
             self.setWindowTitle("2tor · English while you work")
-            self.resize(470, 680)
+            self.resize(470, 740)
             self.setMinimumSize(390, 480)
             self.engine = Engine(config)
             self.running = False
@@ -120,6 +120,18 @@ def main():
             voice_row.addWidget(self.voice, 1)
             voice_row.addWidget(self.preview)
             layout.addLayout(voice_row)
+            recognition_row = QHBoxLayout()
+            recognition_row.addWidget(QLabel("Recognition"))
+            self.recognition = QComboBox()
+            self.recognition.addItem("Small · more accurate", "small_streaming")
+            self.recognition.addItem("Tiny · lower CPU", "tiny_streaming")
+            self.recognition.setCurrentIndex(self.recognition.findData(config.stt_model))
+            self.recognition.setToolTip("Pause the session before changing recognition")
+            self.recognition.currentIndexChanged.connect(
+                lambda _: self.engine.command("stt_model", self.recognition.currentData())
+            )
+            recognition_row.addWidget(self.recognition, 1)
+            layout.addLayout(recognition_row)
             proactive = QHBoxLayout()
             proactive.addWidget(QLabel("Quiet check-in"))
             interval = QComboBox()
@@ -265,6 +277,7 @@ def main():
                     self.current_reply = ""
                     self.render()
             self.preview.setEnabled(not self.engine.busy and not self.focus.isChecked())
+            self.recognition.setEnabled(not self.engine.active and not self.engine.busy)
 
         def closeEvent(self, event):
             self.timer.stop()

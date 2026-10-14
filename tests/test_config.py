@@ -21,3 +21,14 @@ def test_env_key_and_device_config(tmp_path, monkeypatch):
     cfg = Config.load(env)
     assert cfg.api_key == "test-value"
     assert cfg.input_device == 3
+
+
+def test_recognition_pause_and_keyterms_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("STT_END_PAUSE_SECONDS", "1.6")
+    monkeypatch.setenv("STT_KEYTERMS", "DeepSeek, 2tor, , Kubernetes")
+    cfg = Config.load(tmp_path / "missing.env")
+    assert cfg.stt_end_pause == 1.6
+    assert cfg.stt_keyterms == ("DeepSeek", "2tor", "Kubernetes")
+    monkeypatch.setenv("STT_END_PAUSE_SECONDS", "0.1")
+    with pytest.raises(ValueError, match="STT_END_PAUSE_SECONDS"):
+        Config.load(tmp_path / "missing.env")

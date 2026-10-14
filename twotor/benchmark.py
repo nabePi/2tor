@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from .config import Config
@@ -15,8 +16,11 @@ def main(argv=None):
     parser.add_argument("--turns", type=int, default=12)
     parser.add_argument("--output", default="artifacts/benchmark.json")
     parser.add_argument("--env")
+    parser.add_argument("--stt-model", choices=["tiny_streaming", "small_streaming"])
     args = parser.parse_args(argv)
     cfg = Config.load(args.env)
+    if args.stt_model:
+        cfg = replace(cfg, stt_model=args.stt_model)
     os.environ.setdefault("OMP_NUM_THREADS", str(cfg.threads))
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     import platform
@@ -65,6 +69,9 @@ def main(argv=None):
             "How is your work going today?",
             "I am working on a small project.",
             "Could you help me practice my English?",
+            "Test, test.",
+            "Can you hear me clearly?",
+            "I think this task takes time.",
         ]
         cpu_start = psutil.Process().cpu_times()
         started = time.monotonic()

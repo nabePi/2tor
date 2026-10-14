@@ -4,7 +4,7 @@
 
 Alur: **mikrofon → STT lokal → DeepSeek API → TTS lokal → speaker/headphone**.
 
-Aplikasi menggunakan Python + PySide6 Qt Widgets, STT Moonshine Tiny Streaming English, dan TTS KittenTTS Nano INT8 melalui ONNX Runtime. GPU tidak diperlukan. Model suara diunduh saat pertama dipakai lalu digunakan dari cache lokal. Percakapan dengan DeepSeek tetap membutuhkan internet dan API key.
+Aplikasi menggunakan Python + PySide6 Qt Widgets, STT Moonshine Small Streaming English (dengan opsi Tiny), dan TTS KittenTTS Nano INT8 melalui ONNX Runtime. GPU tidak diperlukan. Model suara diunduh saat pertama dipakai lalu digunakan dari cache lokal. Percakapan dengan DeepSeek tetap membutuhkan internet dan API key.
 
 ## Perangkat yang ditargetkan
 
@@ -120,7 +120,8 @@ nano .env
 Isi `DEEPSEEK_API_KEY` seperti pada panduan macOS. Untuk X390, gunakan konfigurasi awal berikut:
 
 ```dotenv
-STT_MODEL=tiny_streaming
+STT_MODEL=small_streaming
+STT_END_PAUSE_SECONDS=1.2
 MOONSHINE_ORT_SINGLE_THREAD=1
 TTS_MODEL=KittenML/kitten-tts-nano-0.8-int8
 TTS_THREADS=2
@@ -128,7 +129,7 @@ TTS_SPEED=0.95
 PROACTIVE_SECONDS=90
 ```
 
-Jika sedang menjalankan pekerjaan berat, coba `TTS_THREADS=1` dan `PROACTIVE_SECONDS=300`.
+Jika sedang menjalankan pekerjaan berat, coba `TTS_THREADS=1` dan `PROACTIVE_SECONDS=300`. Small dipilih untuk menyeimbangkan akurasi dan sumber daya; jika X390 terasa berat, pilih Tiny melalui kontrol Recognition atau `.env`.
 
 ### 5. Jalankan dan periksa audio
 
@@ -195,6 +196,12 @@ Gunakan script setup untuk instalasi KittenTTS. Script memasang `kittenml==0.9.4
 
 ## Conversation
 
+- **Recognition**: pilih **Small · more accurate** untuk akurasi lebih baik, atau
+  **Tiny · lower CPU** untuk beban CPU lebih rendah. Pause session sebelum mengganti
+  model; model sebelumnya dilepas agar tidak ada dua model STT dimuat bersamaan.
+  Klik Start session untuk memuat pilihan baru. Saat aplikasi dibuka ulang, pilihan
+  mengikuti `STT_MODEL` di `.env`. Instalasi lama dengan `.env` Tiny tidak otomatis
+  berubah: pilih Small di UI atau ubah baris `.env` menjadi `STT_MODEL=small_streaming`.
 - **Voice**: pilih Bella, Jasper, Luna, Bruno, Rosie, Hugo, Kiki, atau Leo.
   Pilihan langsung dipakai pada jawaban berikutnya; jawaban yang sudah berjalan
   tetap memakai suara sebelumnya. Saat aplikasi dibuka ulang, default kembali
@@ -207,7 +214,8 @@ Gunakan script setup untuk instalasi KittenTTS. Script memasang `kittenml==0.9.4
   nonaktifkan Focus / mute sebelum mencoba suara.
 - Start session: load voices, open microphone, greet you and open an English topic.
 - Hands-free listening: partial transcript appears while you talk. A completed
-  segment waits another 0.7 seconds so short pauses can join into one turn.
+  segment waits another 1.2 seconds by default so short pauses can join into one turn.
+  Set `STT_END_PAUSE_SECONDS` between 0.5 and 3 to adjust this extra wait.
 - AI response: DeepSeek streams with thinking disabled; complete sentences go to
   a bounded synthesis queue. Audio starts before the whole reply is generated.
 - Stop reply: stops playback and cancels the API request; listening resumes after
@@ -234,7 +242,8 @@ The same low-resource defaults are appropriate for the M4 Pro and X390:
 
 | Setting | Default |
 |---|---|
-| STT | tiny_streaming, English, 34M parameters |
+| STT | small_streaming, English, 123M parameters; Tiny option has 34M |
+| Extra pause before sending transcript | STT_END_PAUSE_SECONDS=1.2 |
 | Native STT inference | MOONSHINE_ORT_SINGLE_THREAD=1 |
 | TTS | KittenML/kitten-tts-nano-0.8-int8, 15M parameters |
 | TTS CPU threads | 2, sequential ONNX execution, spinning disabled |
@@ -244,12 +253,29 @@ The same low-resource defaults are appropriate for the M4 Pro and X390:
 | LLM context | Last 20 messages; replies up to 180 output tokens |
 | Memory guard | Pause above 2800 MB process-tree RSS, checked every 5 seconds |
 
-STT is reset after completed turns to release transcript/audio state. TTS uses
+STT is reset after completed conversation turns, rather than every VAD segment,
+to preserve audio look-behind across short pauses. TTS uses
 no CPU memory arena. Quiet STT streams are also reset every 30 seconds. Idle
 microphone capture only feeds STT while listening.
-For an especially busy X390, try TTS_THREADS=1. For stronger recognition,
-STT_MODEL=small_streaming is an optional 123M-parameter English model; benchmark
-it first. KittenTTS micro/mini are optional quality alternatives, also ONNX.
+For an especially busy X390, try TTS_THREADS=1 or STT_MODEL=tiny_streaming.
+Benchmark your selected STT model on the X390. KittenTTS micro/mini are optional
+quality alternatives, also ONNX.
+
+Untuk nama/istilah khusus yang sering keliru, isi misalnya
+`STT_KEYTERMS=DeepSeek,2tor,Kubernetes`. Maksimal 50 istilah, masing-masing
+80 karakter; default kosong. Ini memberi bias pada decoder lokal, bukan
+menulis ulang ucapan dengan LLM. Gunakan hanya istilah yang memang kamu pakai.
+Jika kalimat terkirim saat kamu masih berpikir, coba `STT_END_PAUSE_SECONDS=1.6`.
+Periksa juga pilihan INPUT_DEVICE jika kata pendek seperti “test” tertukar:
+pastikan yang dipakai mikrofon/headset fisik yang benar, bukan perangkat audio virtual.
+
+Uji Small + KittenTTS di Mac pada 100 giliran sintetis (enam frasa berulang)
+mencatat puncak RSS sekitar 1362 MiB, atau sekitar 1,4 GB. Frasa sintetis
+“Test, test.” dikenali sebagai “Test Test”. Median komputasi STT per klip sekitar
+447 ms; ini bukan latency percakapan lengkap karena tidak mencakup jeda akhir
+ucapan, mikrofon, UI, atau DeepSeek. Hasil ini belum memvalidasi aksenmu maupun
+performa X390. Coba frasa yang sama saat status aplikasi **Listening**;
+gunakan **Stop reply** jika AI masih menjawab sebelum kamu mengambil giliran.
 
 The memory guard is a soft safety threshold, not a hard OS-level RAM cap: an
 allocation can briefly exceed it, and pausing does not unload cached models.
@@ -277,9 +303,12 @@ if you wish to remove saved history.
 ./scripts/run.sh --smoke-test
 ./scripts/run.sh --voice-test
 .venv/bin/python -m twotor.benchmark --turns 100
+# Bandingkan model secara eksplisit tanpa mengubah .env:
+.venv/bin/python -m twotor.benchmark --stt-model small_streaming --turns 100 --output artifacts/small.json
+.venv/bin/python -m twotor.benchmark --stt-model tiny_streaming --turns 100 --output artifacts/tiny.json
 ```
 
-The benchmark synthesizes three English phrases, feeds them back into local STT
+The benchmark synthesizes six English phrases including “Test, test.”, feeds them back into local STT
 and checks completed transcripts, CPU time, synthesis speed and peak RSS. It
 does not open the microphone, play sound or call DeepSeek. JSON reports go in
 artifacts/; compare results on both OSes. A full conversational latency figure

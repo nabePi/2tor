@@ -21,10 +21,11 @@ def test_pipeline_completes_without_ui_and_focus_cancels(monkeypatch):
 
     cancelled = threading.Event()
     voices = []
+    models = []
 
     class STT:
         def __init__(self, *args):
-            pass
+            models.append(args[0].stt_model)
 
         def reset(self):
             pass
@@ -78,6 +79,15 @@ def test_pipeline_completes_without_ui_and_focus_cancels(monkeypatch):
         engine.command("pause")
         wait_for(lambda: not engine.active)
         assert not engine.listen.is_set()
+        engine.command("stt_model", "tiny_streaming")
+        wait_for(lambda: engine.stt_model == "tiny_streaming")
+        assert engine.stt is None
+        engine.command("start")
+        wait_for(lambda: engine.active)
+        assert models == ["small_streaming", "tiny_streaming"]
+        engine.command("stt_model", "small_streaming")
+        wait_for(lambda: engine.commands.empty())
+        assert engine.stt_model == "tiny_streaming"  # Reject switching a live microphone.
     finally:
         engine.command("quit")
         engine.thread.join(timeout=3)

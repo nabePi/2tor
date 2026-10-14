@@ -31,15 +31,15 @@ class SpeechToText:
             },
         )
         self.callback = callback
+        if config.stt_keyterms:
+            self.transcriber.set_keyterms(config.stt_keyterms)
         self.stream = None
-        self.completed = False
         self.reset()
 
     def reset(self):
         if self.stream is not None:
             self.stream.remove_all_listeners()
             self.stream.close()
-        self.completed = False
         self.stream = self.transcriber.create_stream(update_interval=0.5)
         self.stream.add_listener(self._event)
         self.stream.start()
@@ -52,13 +52,13 @@ class SpeechToText:
         elif isinstance(event, LineTextChanged):
             self.callback("partial", event.line.text)
         elif isinstance(event, LineCompleted):
-            self.completed = True
             self.callback("transcript", event.line.text)
 
     def feed(self, audio, rate):
         self.stream.add_audio(audio, rate)
-        if self.completed:
-            self.reset()  # Release the previous turn's transcript/audio state.
+        # A completed VAD segment may share a block with the next speech onset.
+        # Keep the stream until the engine ends the user's turn, preserving
+        # look-behind audio and context across short pauses.
 
     def close(self):
         if self.stream:

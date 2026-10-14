@@ -1,11 +1,12 @@
 import queue
 import threading
 import time
+from dataclasses import replace
 
 import psutil
 import sounddevice as sd
 
-from .config import VOICES
+from .config import STT_MODELS, VOICES
 from .conversation import IdlePolicy, SentenceBuffer
 from .llm import DeepSeek
 from .voice import SpeechToText, TextToSpeech
@@ -42,6 +43,7 @@ class Engine:
         self.work_generation = None
         self.capture = None
         self.stt = None
+        self.stt_model = config.stt_model
         self.tts = None
         self.voice = config.voice
         self.history = []
@@ -158,7 +160,7 @@ class Engine:
         self.emit("state", "Loading local voices…")
         if self.stt is None:
             self.stt = SpeechToText(
-                self.config,
+                replace(self.config, stt_model=self.stt_model),
                 self._transcript,
                 lambda fraction, file: self.emit(
                     "notice", f"STT download: {fraction:.0%} · {file}"
@@ -408,6 +410,19 @@ class Engine:
                             self.emit("notice", f"{data} will speak the next reply.")
                         else:
                             self.emit("error", "Unknown TTS voice")
+                    elif name == "stt_model":
+                        if self.active or self.busy:
+                            self.emit("notice", "Pause the session before changing recognition.")
+                        elif data not in STT_MODELS:
+                            self.emit("error", "Unknown STT model")
+                        elif data != self.stt_model:
+                            if self.stt:
+                                self.stt.close()
+                                self.stt = None
+                            self.stt_model = data
+                            self.emit(
+                                "notice", "Recognition updated. Start the session to load it."
+                            )
                     elif name == "preview":
                         self._preview(data)
                     elif name == "pause":
@@ -492,7 +507,7 @@ class Engine:
                     and not self.busy
                     and self.active
                     and not self.focus
-                    and now - self.pending_at > 0.7
+                    and now - self.pending_at > self.config.stt_end_pause
                 ):
                     text = self.pending
                     self.commands.put_nowait(("text", text))

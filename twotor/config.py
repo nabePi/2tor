@@ -5,6 +5,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 VOICES = ("Bella", "Jasper", "Luna", "Bruno", "Rosie", "Hugo", "Kiki", "Leo")
+STT_MODELS = ("tiny_streaming", "small_streaming")
 
 
 def device(value: str):
@@ -17,7 +18,9 @@ class Config:
     api_key: str = ""
     base_url: str = "https://api.deepseek.com"
     model: str = "deepseek-flash"
-    stt_model: str = "tiny_streaming"
+    stt_model: str = "small_streaming"
+    stt_end_pause: float = 1.2
+    stt_keyterms: tuple[str, ...] = ()
     tts_model: str = "KittenML/kitten-tts-nano-0.8-int8"
     voice: str = "Jasper"
     speed: float = 0.95
@@ -40,6 +43,10 @@ class Config:
             base_url=os.getenv("DEEPSEEK_BASE_URL", cls.base_url).rstrip("/"),
             model=os.getenv("DEEPSEEK_MODEL", cls.model),
             stt_model=os.getenv("STT_MODEL", cls.stt_model),
+            stt_end_pause=float(os.getenv("STT_END_PAUSE_SECONDS", "1.2")),
+            stt_keyterms=tuple(
+                term.strip() for term in os.getenv("STT_KEYTERMS", "").split(",") if term.strip()
+            ),
             tts_model=os.getenv("TTS_MODEL", cls.tts_model),
             voice=os.getenv("TTS_VOICE", cls.voice),
             speed=float(os.getenv("TTS_SPEED", str(cls.speed))),
@@ -51,8 +58,12 @@ class Config:
             memory_limit_mb=int(os.getenv("MEMORY_LIMIT_MB", "2800")),
             correction=os.getenv("CORRECTION_MODE", "gentle"),
         )
-        if cfg.stt_model not in {"tiny_streaming", "small_streaming"}:
+        if cfg.stt_model not in STT_MODELS:
             raise ValueError("STT_MODEL must be tiny_streaming or small_streaming")
+        if not 0.5 <= cfg.stt_end_pause <= 3:
+            raise ValueError("STT_END_PAUSE_SECONDS must be 0.5–3")
+        if len(cfg.stt_keyterms) > 50 or any(len(term) > 80 for term in cfg.stt_keyterms):
+            raise ValueError("STT_KEYTERMS supports at most 50 terms, each up to 80 characters")
         if cfg.tts_model not in {
             "KittenML/kitten-tts-nano-0.8-int8",
             "KittenML/kitten-tts-micro-0.8",
