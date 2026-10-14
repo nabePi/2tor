@@ -5,7 +5,21 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 VOICES = ("Bella", "Jasper", "Luna", "Bruno", "Rosie", "Hugo", "Kiki", "Leo")
-STT_MODELS = ("tiny_streaming", "small_streaming")
+KOKORO_VOICES = {
+    "Heart": "af_heart",
+    "Bella": "af_bella",
+    "Nicole": "af_nicole",
+    "Sarah": "af_sarah",
+    "Adam": "am_adam",
+    "Michael": "am_michael",
+    "Fenrir": "am_fenrir",
+    "Emma": "bf_emma",
+}
+STT_MODELS = ("whisper_small_en", "whisper_base_en", "tiny_streaming", "small_streaming")
+
+
+def voices_for_model(model):
+    return tuple(KOKORO_VOICES) if model == "kokoro_int8" else VOICES
 
 
 def device(value: str):
@@ -18,12 +32,13 @@ class Config:
     api_key: str = ""
     base_url: str = "https://api.deepseek.com"
     model: str = "deepseek-flash"
-    stt_model: str = "small_streaming"
-    stt_end_pause: float = 1.2
+    stt_model: str = "whisper_small_en"
+    stt_end_pause: float = 0.65
     stt_keyterms: tuple[str, ...] = ()
-    tts_model: str = "KittenML/kitten-tts-nano-0.8-int8"
-    voice: str = "Jasper"
-    speed: float = 0.95
+    stt_threads: int = 2
+    tts_model: str = "kokoro_int8"
+    voice: str = "Heart"
+    speed: float = 1.05
     threads: int = 2
     input_device: object = None
     output_device: object = None
@@ -38,17 +53,19 @@ class Config:
         if not candidate.is_file():
             candidate = Path.home() / ".config/2tor/.env"
         load_dotenv(env_path or candidate, override=False)
+        tts_model = os.getenv("TTS_MODEL", cls.tts_model)
         cfg = cls(
             api_key=os.getenv("DEEPSEEK_API_KEY", "").strip(),
             base_url=os.getenv("DEEPSEEK_BASE_URL", cls.base_url).rstrip("/"),
             model=os.getenv("DEEPSEEK_MODEL", cls.model),
             stt_model=os.getenv("STT_MODEL", cls.stt_model),
-            stt_end_pause=float(os.getenv("STT_END_PAUSE_SECONDS", "1.2")),
+            stt_end_pause=float(os.getenv("STT_END_PAUSE_SECONDS", str(cls.stt_end_pause))),
+            stt_threads=int(os.getenv("STT_THREADS", "2")),
             stt_keyterms=tuple(
                 term.strip() for term in os.getenv("STT_KEYTERMS", "").split(",") if term.strip()
             ),
-            tts_model=os.getenv("TTS_MODEL", cls.tts_model),
-            voice=os.getenv("TTS_VOICE", cls.voice),
+            tts_model=tts_model,
+            voice=os.getenv("TTS_VOICE", "Heart" if tts_model == "kokoro_int8" else "Jasper"),
             speed=float(os.getenv("TTS_SPEED", str(cls.speed))),
             threads=int(os.getenv("TTS_THREADS", str(cls.threads))),
             input_device=device(os.getenv("INPUT_DEVICE", "")),
@@ -59,18 +76,21 @@ class Config:
             correction=os.getenv("CORRECTION_MODE", "gentle"),
         )
         if cfg.stt_model not in STT_MODELS:
-            raise ValueError("STT_MODEL must be tiny_streaming or small_streaming")
+            raise ValueError("Unknown STT_MODEL")
+        if not 1 <= cfg.stt_threads <= 4:
+            raise ValueError("STT_THREADS must be 1–4")
         if not 0.5 <= cfg.stt_end_pause <= 3:
             raise ValueError("STT_END_PAUSE_SECONDS must be 0.5–3")
         if len(cfg.stt_keyterms) > 50 or any(len(term) > 80 for term in cfg.stt_keyterms):
             raise ValueError("STT_KEYTERMS supports at most 50 terms, each up to 80 characters")
         if cfg.tts_model not in {
+            "kokoro_int8",
             "KittenML/kitten-tts-nano-0.8-int8",
             "KittenML/kitten-tts-micro-0.8",
             "KittenML/kitten-tts-mini-0.8",
         }:
             raise ValueError("TTS_MODEL must be a supported lightweight ONNX model")
-        if cfg.voice not in VOICES:
+        if cfg.voice not in voices_for_model(cfg.tts_model):
             raise ValueError("Unknown TTS_VOICE")
         if not 0.7 <= cfg.speed <= 1.3 or not 1 <= cfg.threads <= 4:
             raise ValueError("TTS_SPEED must be 0.7–1.3; TTS_THREADS must be 1–4")

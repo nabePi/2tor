@@ -6,10 +6,15 @@ from pathlib import Path
 
 import numpy as np
 
-from .config import VOICES
+from .config import KOKORO_VOICES, voices_for_model
 
 
 class SpeechToText:
+    def __new__(cls, config=None, callback=None, progress=lambda *args: None):
+        if config and config.stt_model.startswith("whisper_"):
+            return WhisperSpeechToText(config, callback, progress)
+        return super().__new__(cls)
+
     def __init__(self, config, callback, progress=lambda *args: None):
         os.environ.setdefault("MOONSHINE_ORT_SINGLE_THREAD", "1")
         from moonshine_voice import ModelArch, Transcriber
@@ -68,6 +73,11 @@ class SpeechToText:
 
 
 class TextToSpeech:
+    def __new__(cls, config):
+        if config.tts_model == "kokoro_int8":
+            return KokoroSpeech(config)
+        return super().__new__(cls)
+
     def __init__(self, config):
         import onnxruntime as ort
         import phonemizer
@@ -108,11 +118,155 @@ class TextToSpeech:
         # Warm up without playing anything.
         self.generate("Hello.")
 
-    def generate(self, text, voice=None):
+    def generate(self, text, voice=None, speed=None):
         voice = voice or self.config.voice
-        if voice not in VOICES:
+        if voice not in voices_for_model(self.config.tts_model):
             raise ValueError("Unknown TTS voice")
         return np.asarray(
-            self.model.generate(text, voice=voice, speed=self.config.speed, clean_text=True),
+            self.model.generate(
+                text, voice=voice, speed=speed or self.config.speed, clean_text=True
+            ),
             dtype=np.float32,
         ).reshape(-1)
+
+
+class WhisperSpeechToText:
+    """Native VAD only (no Moonshine ASR weights) + Whisper CPU INT8 decoding."""
+
+    def __init__(self, config, callback, progress=lambda *args: None):
+        from faster_whisper import WhisperModel
+        from moonshine_voice import ModelArch, Transcriber
+
+        os.environ.setdefault("MOONSHINE_ORT_SINGLE_THREAD", "1")
+        self.callback = callback
+        progress(0, "Loading Whisper English INT8; first use downloads weights")
+        model = "small.en" if config.stt_model == "whisper_small_en" else "base.en"
+        self.model = WhisperModel(
+            model, device="cpu", compute_type="int8", cpu_threads=config.stt_threads, num_workers=1
+        )
+        self.keyterms = " ".join(config.stt_keyterms) or None
+        self.transcriber = Transcriber(
+            ".",
+            ModelArch.TINY_STREAMING,
+            options={
+                "skip_transcription": "true",
+                "return_audio_data": "true",
+                "word_timestamps": "false",
+                "vad_max_segment_duration": 20.0,
+            },
+        )
+        self.stream = None
+        self.reset()
+
+    def _event(self, event):
+        from moonshine_voice import LineCompleted, LineStarted
+
+        if isinstance(event, LineStarted):
+            self.callback("speech", "")
+        elif isinstance(event, LineCompleted):
+            audio = np.asarray(event.line.audio_data or [], dtype=np.float32)
+            if len(audio) < 1600 or float(np.sqrt(np.mean(audio**2))) < 0.001:
+                self.callback("transcript", "")
+                return
+            self.callback("partial", "Transcribing locally…")
+            segments, _ = self.model.transcribe(
+                audio,
+                language="en",
+                beam_size=5,
+                best_of=1,
+                temperature=0.0,
+                condition_on_previous_text=False,
+                vad_filter=False,
+                hotwords=self.keyterms,
+                max_new_tokens=160,
+            )
+            text = " ".join(
+                segment.text.strip() for segment in segments if segment.no_speech_prob < 0.8
+            ).strip()
+            self.callback("transcript", text)
+
+    def reset(self):
+        if self.stream:
+            self.stream.remove_all_listeners()
+            self.stream.close()
+        self.stream = self.transcriber.create_stream(update_interval=0.5)
+        self.stream.add_listener(self._event)
+        self.stream.start()
+
+    def feed(self, audio, rate):
+        self.stream.add_audio(audio, rate)
+
+    def close(self):
+        if self.stream:
+            self.stream.remove_all_listeners()
+            self.stream.close()
+        self.transcriber.close()
+        self.model = None
+
+
+def _kokoro_file(name):
+    from uuid import uuid4
+
+    import httpx
+
+    directory = Path.home() / ".cache/2tor/kokoro-v1.0"
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / name
+    if target.is_file():
+        return str(target)
+    partial = directory / (name + "." + uuid4().hex + ".partial")
+    url = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/" + name
+    try:
+        with httpx.stream("GET", url, follow_redirects=True, timeout=60) as response:
+            response.raise_for_status()
+            with partial.open("wb") as file:
+                for chunk in response.iter_bytes():
+                    file.write(chunk)
+        partial.replace(target)
+    finally:
+        partial.unlink(missing_ok=True)
+    return str(target)
+
+
+class KokoroSpeech:
+    def __init__(self, config):
+        import espeakng_loader
+        import onnxruntime as ort
+        from kokoro_onnx import Kokoro
+        from kokoro_onnx.config import EspeakConfig
+
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = config.threads
+        options.inter_op_num_threads = 1
+        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        options.enable_cpu_mem_arena = False
+        session = ort.InferenceSession(
+            _kokoro_file("kokoro-v1.0.int8.onnx"),
+            sess_options=options,
+            providers=["CPUExecutionProvider"],
+        )
+        self.model = Kokoro.from_session(
+            session,
+            _kokoro_file("voices-v1.0.bin"),
+            espeak_config=EspeakConfig(
+                lib_path=espeakng_loader.get_library_path(),
+                data_path=espeakng_loader.get_data_path(),
+            ),
+        )
+        self.config = config
+        self.generate("Hello.")
+
+    def generate(self, text, voice=None, speed=None):
+        voice_id = KOKORO_VOICES[voice or self.config.voice]
+        audio, rate = self.model.create(
+            text,
+            voice=voice_id,
+            speed=speed or self.config.speed,
+            lang="en-gb" if voice_id.startswith("b") else "en-us",
+            sentence_pause=0.12,
+            clause_pause=0.06,
+        )
+        if rate != 24000:
+            raise RuntimeError("Unexpected Kokoro sample rate")
+        return np.asarray(audio, dtype=np.float32).reshape(-1)

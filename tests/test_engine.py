@@ -37,7 +37,7 @@ def test_pipeline_completes_without_ui_and_focus_cancels(monkeypatch):
         def __init__(self, *args):
             pass
 
-        def generate(self, text, voice=None):
+        def generate(self, text, voice=None, speed=None):
             voices.append(voice)
             return np.zeros(2400, dtype=np.float32)
 
@@ -60,7 +60,14 @@ def test_pipeline_completes_without_ui_and_focus_cancels(monkeypatch):
     monkeypatch.setattr(module.sd, "stop", lambda: None)
     monkeypatch.setattr(module.sd, "get_stream", lambda: type("Stream", (), {"active": False})())
     monkeypatch.setattr(Engine, "_open_capture", lambda self: None)
-    engine = Engine(Config(api_key="test"))
+    engine = Engine(
+        Config(
+            api_key="test",
+            stt_model="small_streaming",
+            tts_model="KittenML/kitten-tts-nano-0.8-int8",
+            voice="Jasper",
+        )
+    )
     try:
         engine.command("voice", "Luna")
         engine.command("start")
@@ -105,7 +112,7 @@ def test_preview_is_keyless_local_and_reuses_tts(monkeypatch):
         def __init__(self, *args):
             created.append(self)
 
-        def generate(self, text, voice=None):
+        def generate(self, text, voice=None, speed=None):
             voices.append(voice)
             return np.zeros(2400, dtype=np.float32)
 
@@ -119,7 +126,13 @@ def test_preview_is_keyless_local_and_reuses_tts(monkeypatch):
     monkeypatch.setattr(module.sd, "stop", lambda: None)
     monkeypatch.setattr(module.sd, "play", lambda *a, **kw: playback.append(kw))
     monkeypatch.setattr(module.sd, "get_stream", lambda: type("Stream", (), {"active": False})())
-    engine = Engine(Config(output_device="headphones"))
+    engine = Engine(
+        Config(
+            output_device="headphones",
+            tts_model="KittenML/kitten-tts-nano-0.8-int8",
+            voice="Jasper",
+        )
+    )
     try:
         engine.command("preview", "Luna")
         wait_for(lambda: len(playback) == 1 and not engine.busy)
@@ -150,7 +163,7 @@ def test_stop_during_preview_loading_prevents_late_playback(monkeypatch):
             loading.set()
             release.wait(2)
 
-        def generate(self, text, voice=None):
+        def generate(self, text, voice=None, speed=None):
             return np.zeros(2400, dtype=np.float32)
 
     monkeypatch.setattr(module, "TextToSpeech", TTS)
@@ -189,7 +202,7 @@ def test_preview_during_session_restores_listening(monkeypatch):
         def __init__(self, *args):
             pass
 
-        def generate(self, text, voice=None):
+        def generate(self, text, voice=None, speed=None):
             assert not engine.listen.is_set()
             return np.zeros(2400, dtype=np.float32)
 
@@ -202,7 +215,7 @@ def test_preview_during_session_restores_listening(monkeypatch):
         engine.stt = STT()
         engine.active = True
         engine.listen.set()
-        engine.command("preview", "Hugo")
+        engine.command("preview", "Heart")
         assert played.wait(2)
         wait_for(lambda: not engine.busy)
         assert engine.listen.is_set() and engine.active
@@ -210,9 +223,142 @@ def test_preview_during_session_restores_listening(monkeypatch):
         engine.command("focus", True)
         wait_for(lambda: engine.focus)
         played.clear()
-        engine.command("preview", "Hugo")
+        engine.command("preview", "Heart")
         wait_for(lambda: engine.commands.empty())
         assert not played.is_set()
+    finally:
+        engine.command("quit")
+        engine.thread.join(timeout=3)
+
+
+def test_mic_test_needs_no_key_and_preserves_actual_recognized_words(monkeypatch):
+    import twotor.engine as module
+
+    class STT:
+        def __init__(self, *args):
+            pass
+
+        def reset(self):
+            pass
+
+        def close(self):
+            pass
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Mic test must not load TTS or call DeepSeek")
+
+    monkeypatch.setattr(module, "SpeechToText", STT)
+    monkeypatch.setattr(module, "TextToSpeech", unexpected)
+    monkeypatch.setattr(module, "DeepSeek", unexpected)
+    monkeypatch.setattr(module.sd, "stop", lambda: None)
+    monkeypatch.setattr(Engine, "_open_capture", lambda self: None)
+    engine = Engine(Config())
+    try:
+        engine.command("mic_test")
+        wait_for(lambda: engine.testing and engine.listen.is_set())
+        engine._transcript("transcript", "Best, best, best.")
+        assert engine.history == [] and engine.pending == ""
+        events = []
+        while not engine.events.empty():
+            events.append(engine.events.get_nowait())
+        assert ("user", "Best, best, best.", None) in events
+        engine.command("pause")
+        wait_for(lambda: not engine.testing and not engine.active)
+    finally:
+        engine.command("quit")
+        engine.thread.join(timeout=3)
+
+
+def test_next_sentence_is_synthesized_while_previous_audio_is_playing(monkeypatch):
+    import twotor.engine as module
+
+    first_playing = threading.Event()
+    second_ready = threading.Event()
+    playback = []
+
+    class STT:
+        def __init__(self, *args):
+            pass
+
+        def reset(self):
+            pass
+
+        def close(self):
+            pass
+
+    class TTS:
+        def __init__(self, *args):
+            self.calls = 0
+
+        def generate(self, text, voice=None, speed=None):
+            self.calls += 1
+            if self.calls == 2:
+                assert first_playing.wait(2)
+                second_ready.set()
+            return np.full(24, self.calls, dtype=np.float32)
+
+    class LLM:
+        def __init__(self, *args):
+            pass
+
+        def stream(self, *args):
+            yield "Hello. How are you?"
+
+    class Stream:
+        @property
+        def active(self):
+            return len(playback) == 1 and not second_ready.is_set()
+
+    def play(audio, *args, **kwargs):
+        playback.append(int(audio[0]))
+        first_playing.set()
+
+    monkeypatch.setattr(module, "SpeechToText", STT)
+    monkeypatch.setattr(module, "TextToSpeech", TTS)
+    monkeypatch.setattr(module, "DeepSeek", LLM)
+    monkeypatch.setattr(module.sd, "stop", lambda: None)
+    monkeypatch.setattr(module.sd, "play", play)
+    monkeypatch.setattr(module.sd, "get_stream", Stream)
+    monkeypatch.setattr(Engine, "_open_capture", lambda self: None)
+    engine = Engine(Config(api_key="test"))
+    try:
+        engine.command("start")
+        wait_for(lambda: len(engine.history) == 1 and not engine.busy)
+        assert second_ready.is_set() and playback == [1, 2]
+        assert engine.listen.is_set()
+    finally:
+        engine.command("quit")
+        engine.thread.join(timeout=3)
+
+
+def test_tts_switch_reloads_only_selected_engine_and_updates_voices(monkeypatch):
+    import twotor.engine as module
+
+    loaded = []
+    played = []
+
+    class TTS:
+        def __init__(self, config):
+            loaded.append((config.tts_model, config.voice))
+
+        def generate(self, text, voice=None, speed=None):
+            played.append((voice, speed))
+            return np.zeros(24, dtype=np.float32)
+
+    monkeypatch.setattr(module, "TextToSpeech", TTS)
+    monkeypatch.setattr(module.sd, "stop", lambda: None)
+    monkeypatch.setattr(module.sd, "play", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.sd, "get_stream", lambda: type("Stream", (), {"active": False})())
+    engine = Engine(Config(tts_model="KittenML/kitten-tts-nano-0.8-int8", voice="Jasper"))
+    try:
+        engine.command("tts_model", "kokoro_int8")
+        wait_for(lambda: engine.tts_model == "kokoro_int8")
+        assert engine.tts is None and engine.voice == "Heart"
+        assert "Fenrir" in engine.voices and "Jasper" not in engine.voices
+        engine.command("preview", "Heart")
+        wait_for(lambda: played and not engine.busy)
+        assert loaded == [("kokoro_int8", "Heart")]
+        assert played == [("Heart", 1.05)]
     finally:
         engine.command("quit")
         engine.thread.join(timeout=3)

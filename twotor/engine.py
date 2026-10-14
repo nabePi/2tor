@@ -1,3 +1,4 @@
+import math
 import queue
 import threading
 import time
@@ -6,7 +7,7 @@ from dataclasses import replace
 import psutil
 import sounddevice as sd
 
-from .config import STT_MODELS, VOICES
+from .config import STT_MODELS, voices_for_model
 from .conversation import IdlePolicy, SentenceBuffer
 from .llm import DeepSeek
 from .voice import SpeechToText, TextToSpeech
@@ -45,7 +46,12 @@ class Engine:
         self.stt = None
         self.stt_model = config.stt_model
         self.tts = None
+        self.tts_model = config.tts_model
         self.voice = config.voice
+        self.voices = voices_for_model(config.tts_model)
+        self.speed = config.speed
+        self.input_device = config.input_device
+        self.testing = False
         self.history = []
         self.policy = IdlePolicy(config.proactive_seconds, time.monotonic())
         self.thread = threading.Thread(target=self.run, name="2tor-audio", daemon=True)
@@ -86,6 +92,8 @@ class Engine:
             return
         if status:
             self.emit("notice", "Audio capture overloaded. Try TTS_THREADS=1.")
+        rms = float((audio[:, 0] ** 2).mean() ** 0.5)
+        self.emit("level", (20 * math.log10(max(rms, 1e-6)), float(abs(audio[:, 0]).max())))
         try:
             self.audio.put_nowait(audio[:, 0].copy())
         except queue.Full:
@@ -104,6 +112,11 @@ class Engine:
             self.emit("partial", data)
         elif name == "transcript":
             self.speaking = False
+            if self.testing:
+                if data.strip():
+                    self.emit("user", data.strip())
+                self.emit("partial", "Mic test · speak again; nothing is sent to DeepSeek.")
+                return
             if data.strip():
                 self.pending = (self.pending + " " + data.strip()).strip()[:4000]
                 self.pending_at = now
@@ -120,10 +133,10 @@ class Engine:
     def _open_capture(self):
         if self.capture:
             return
-        info = sd.query_devices(self.config.input_device, "input")
+        info = sd.query_devices(self.input_device, "input")
         self.rate = int(info["default_samplerate"])
         self.capture = sd.InputStream(
-            device=self.config.input_device,
+            device=self.input_device,
             samplerate=self.rate,
             channels=1,
             blocksize=max(1, self.rate // 10),
@@ -134,6 +147,7 @@ class Engine:
 
     def _pause(self):
         self.active = False
+        self.testing = False
         self.listen.clear()
         self.cancel.set()
         sd.stop()
@@ -150,9 +164,10 @@ class Engine:
             self.stt.reset()
         self.emit("partial", "")
         self.emit("state", "Paused")
+        self.emit("level", (-120, 0))
 
-    def _start(self):
-        if not self.config.api_key:
+    def _start(self, test=False):
+        if not test and not self.config.api_key:
             raise RuntimeError("Fill DEEPSEEK_API_KEY in .env, then restart 2tor.")
         if self.response_thread and self.response_thread.is_alive():
             raise RuntimeError("Previous reply is stopping. Wait briefly, then start again.")
@@ -166,9 +181,11 @@ class Engine:
                     "notice", f"STT download: {fraction:.0%} · {file}"
                 ),
             )
-        if self.tts is None:
-            self.emit("notice", "Loading KittenTTS Nano INT8; first run downloads the model.")
-            self.tts = TextToSpeech(self.config)
+        if self.tts is None and not test:
+            self.emit("notice", "Loading local TTS; first run downloads the model.")
+            self.tts = TextToSpeech(
+                replace(self.config, tts_model=self.tts_model, voice=self.voice, speed=self.speed)
+            )
         # Honor pause/quit sent during downloads; process it in the command loop.
         if not self.commands.empty() or self.quit.is_set():
             self.emit("state", "Ready")
@@ -177,20 +194,25 @@ class Engine:
             raise RuntimeError("Memory target exceeded while loading. Close other 2tor instances.")
         self._open_capture()
         self.active = True
+        self.testing = test
         self.policy.activity(time.monotonic())
         if self.focus:
             self.emit("state", "Focus")
         else:
             self.listen.set()
-            self.emit("state", "Listening")
-            if not self.history:
+            self.emit("state", "Mic test · Listening" if test else "Listening")
+            if test:
+                self.emit(
+                    "partial", "Say: test test test, then best best best. Check the mic level."
+                )
+            if not self.history and not test:
                 self._reply(
                     "Start the session: greet me briefly and open an easy English topic.",
                     proactive=True,
                 )
 
     def _reply(self, instruction=None, proactive=False):
-        if self.busy or not self.active or self.focus:
+        if self.busy or not self.active or self.focus or self.testing:
             return
         self.busy = True
         self.listen.clear()
@@ -205,17 +227,27 @@ class Engine:
         cancel = self.cancel
         history = list(self.history)
         voice = self.voice  # Keep one voice throughout this reply.
+        speed = self.speed
         if proactive:
             self.policy.prompted(time.monotonic())
         self.emit("state", "Thinking")
 
         def pipeline():
             sentences = queue.Queue(maxsize=3)
+            audio_queue = queue.Queue(maxsize=2)
             result = ""
             errors = []
             tts = self.tts
 
-            def say():
+            def enqueue(target, value):
+                while not cancel.is_set():
+                    try:
+                        target.put(value, timeout=0.1)
+                        return
+                    except queue.Full:
+                        pass
+
+            def synthesize():
                 try:
                     while not cancel.is_set():
                         try:
@@ -223,8 +255,24 @@ class Engine:
                         except queue.Empty:
                             continue
                         if text is None:
+                            enqueue(audio_queue, None)
                             break
-                        audio = tts.generate(text, voice=voice)
+                        audio = tts.generate(text, voice=voice, speed=speed)
+                        enqueue(audio_queue, audio)
+                except Exception as exc:
+                    errors.append(f"Voice synthesis failed: {exc}")
+                    cancel.set()
+                    sd.stop()
+
+            def say():
+                try:
+                    while not cancel.is_set():
+                        try:
+                            audio = audio_queue.get(timeout=0.1)
+                        except queue.Empty:
+                            continue
+                        if audio is None:
+                            break
                         if cancel.is_set():
                             break
                         self.emit("state", "Speaking", generation)
@@ -233,22 +281,17 @@ class Engine:
                             if cancel.wait(0.04):
                                 sd.stop()
                                 break
-                        if not cancel.is_set():
-                            self.emit("state", "Thinking", generation)
                 except Exception as exc:
                     errors.append(f"Voice playback failed: {exc}")
                     cancel.set()
 
-            speaker = threading.Thread(target=say, name="2tor-tts", daemon=True)
+            synthesizer = threading.Thread(target=synthesize, name="2tor-synth", daemon=True)
+            speaker = threading.Thread(target=say, name="2tor-play", daemon=True)
+            synthesizer.start()
             speaker.start()
 
             def put(text):
-                while not cancel.is_set():
-                    try:
-                        sentences.put(text, timeout=0.1)
-                        return
-                    except queue.Full:
-                        pass
+                enqueue(sentences, text)
 
             try:
                 splitter = SentenceBuffer()
@@ -268,6 +311,7 @@ class Engine:
                 cancel.set()
                 sd.stop()
             finally:
+                synthesizer.join()
                 speaker.join()
                 # Let room echo decay before reopening capture.
                 if not cancel.is_set():
@@ -280,7 +324,7 @@ class Engine:
         self.response_thread.start()
 
     def _preview(self, voice):
-        if voice not in VOICES:
+        if voice not in self.voices:
             self.emit("error", "Unknown TTS voice")
             return
         if self.busy:
@@ -302,6 +346,7 @@ class Engine:
         self.work_generation = generation
         self.cancel = threading.Event()
         cancel = self.cancel
+        speed = self.speed
         self.emit("state", "Loading voice sample…", generation)
 
         def preview():
@@ -309,7 +354,14 @@ class Engine:
             try:
                 if self.tts is None:
                     self.emit("notice", "First preview downloads the local TTS model.", generation)
-                    self.tts = TextToSpeech(self.config)
+                    self.tts = TextToSpeech(
+                        replace(
+                            self.config,
+                            tts_model=self.tts_model,
+                            voice=self.voice,
+                            speed=self.speed,
+                        )
+                    )
                 if cancel.is_set():
                     return
                 if memory_mb() > self.config.memory_limit_mb:
@@ -318,7 +370,7 @@ class Engine:
                     f"Hi, I'm {voice}, your English conversation partner. "
                     "How is your day going? Let's practice a little English together."
                 )
-                audio = self.tts.generate(text, voice=voice)
+                audio = self.tts.generate(text, voice=voice, speed=speed)
                 if cancel.is_set():
                     return
                 self.emit("state", f"Previewing {voice}", generation)
@@ -404,8 +456,33 @@ class Engine:
                     name, data = self.commands.get_nowait()
                     if name == "start":
                         self._start()
+                    elif name == "mic_test":
+                        if not self.active and not self.busy:
+                            self._start(test=True)
+                    elif name == "input_device":
+                        if not self.active and not self.busy:
+                            self.input_device = data
+                    elif name == "speed":
+                        if 0.7 <= float(data) <= 1.3:
+                            self.speed = float(data)
+                    elif name == "tts_model":
+                        if self.active or self.busy:
+                            self.emit("notice", "Pause the session before changing TTS.")
+                        elif (
+                            data in {"kokoro_int8", "KittenML/kitten-tts-nano-0.8-int8"}
+                            and data != self.tts_model
+                        ):
+                            self.tts = None
+                            self.tts_model = data
+                            self.voices = voices_for_model(data)
+                            self.voice = self.voices[0]
+                            self.speed = 1.05 if data == "kokoro_int8" else 1.0
+                            self.emit(
+                                "tts_changed",
+                                {"voices": self.voices, "voice": self.voice, "speed": self.speed},
+                            )
                     elif name == "voice":
-                        if data in VOICES:
+                        if data in self.voices:
                             self.voice = data
                             self.emit("notice", f"{data} will speak the next reply.")
                         else:
@@ -447,7 +524,13 @@ class Engine:
                                 self.listen.set()
                             self.emit("state", "Focus" if self.focus else "Listening")
                     elif name == "text":
-                        if self.active and not self.busy and not self.focus and data.strip():
+                        if (
+                            self.active
+                            and not self.testing
+                            and not self.busy
+                            and not self.focus
+                            and data.strip()
+                        ):
                             text = data.strip()[:4000]
                             self.history.append({"role": "user", "content": text})
                             self.history = self.history[-20:]
@@ -514,7 +597,7 @@ class Engine:
                     self.pending = ""
                 if self.policy.due(
                     now,
-                    active=self.active,
+                    active=self.active and not self.testing,
                     busy=self.busy,
                     focus=self.focus,
                     speaking=self.speaking or bool(self.pending),

@@ -8,7 +8,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from .config import Config
+from .config import STT_MODELS, Config, voices_for_model
 
 
 def main(argv=None):
@@ -16,11 +16,14 @@ def main(argv=None):
     parser.add_argument("--turns", type=int, default=12)
     parser.add_argument("--output", default="artifacts/benchmark.json")
     parser.add_argument("--env")
-    parser.add_argument("--stt-model", choices=["tiny_streaming", "small_streaming"])
+    parser.add_argument("--stt-model", choices=STT_MODELS)
+    parser.add_argument("--tts-model", choices=["kokoro_int8", "KittenML/kitten-tts-nano-0.8-int8"])
     args = parser.parse_args(argv)
     cfg = Config.load(args.env)
     if args.stt_model:
         cfg = replace(cfg, stt_model=args.stt_model)
+    if args.tts_model:
+        cfg = replace(cfg, tts_model=args.tts_model, voice=voices_for_model(args.tts_model)[0])
     os.environ.setdefault("OMP_NUM_THREADS", str(cfg.threads))
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     import platform
@@ -69,9 +72,11 @@ def main(argv=None):
             "How is your work going today?",
             "I am working on a small project.",
             "Could you help me practice my English?",
-            "Test, test.",
+            "Test, test, test.",
             "Can you hear me clearly?",
             "I think this task takes time.",
+            "Best, best, best.",
+            "The best way is to test it.",
         ]
         cpu_start = psutil.Process().cpu_times()
         started = time.monotonic()

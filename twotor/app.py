@@ -4,7 +4,7 @@ import os
 import queue
 import sys
 
-from .config import VOICES, Config
+from .config import Config, voices_for_model
 
 
 def main():
@@ -33,15 +33,17 @@ def main():
     # Set before importing numerical libraries. TTS also sets ORT SessionOptions.
     os.environ.setdefault("OMP_NUM_THREADS", str(config.threads))
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtCore import QEvent, Qt, QTimer
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
         QComboBox,
+        QDoubleSpinBox,
         QHBoxLayout,
         QLabel,
         QLineEdit,
         QMainWindow,
+        QProgressBar,
         QPushButton,
         QTextBrowser,
         QVBoxLayout,
@@ -54,7 +56,7 @@ def main():
         def __init__(self):
             super().__init__()
             self.setWindowTitle("2tor · English while you work")
-            self.resize(470, 740)
+            self.resize(500, 800)
             self.setMinimumSize(390, 480)
             self.engine = Engine(config)
             self.running = False
@@ -65,7 +67,7 @@ def main():
             self.setCentralWidget(root)
             layout = QVBoxLayout(root)
             layout.setContentsMargins(24, 24, 24, 22)
-            layout.setSpacing(14)
+            layout.setSpacing(10)
             title = QLabel("2tor")
             title.setObjectName("title")
             layout.addWidget(title)
@@ -108,8 +110,18 @@ def main():
             layout.addLayout(controls)
             voice_row = QHBoxLayout()
             voice_row.addWidget(QLabel("Voice"))
+            self.tts_engine = QComboBox()
+            self.tts_engine.addItem("Kokoro", "kokoro_int8")
+            self.tts_engine.addItem("Kitten", "KittenML/kitten-tts-nano-0.8-int8")
+            if self.tts_engine.findData(config.tts_model) < 0:
+                self.tts_engine.addItem("Kitten custom", config.tts_model)
+            self.tts_engine.setCurrentIndex(self.tts_engine.findData(config.tts_model))
+            self.tts_engine.currentIndexChanged.connect(
+                lambda _: self.engine.command("tts_model", self.tts_engine.currentData())
+            )
+            voice_row.addWidget(self.tts_engine)
             self.voice = QComboBox()
-            self.voice.addItems(VOICES)
+            self.voice.addItems(voices_for_model(config.tts_model))
             self.voice.setCurrentText(config.voice)
             self.voice.currentTextChanged.connect(lambda name: self.engine.command("voice", name))
             self.preview = QPushButton("Listen to sample")
@@ -120,9 +132,21 @@ def main():
             voice_row.addWidget(self.voice, 1)
             voice_row.addWidget(self.preview)
             layout.addLayout(voice_row)
+            speed_row = QHBoxLayout()
+            speed_row.addWidget(QLabel("Speaking speed"))
+            speed = self.speed = QDoubleSpinBox()
+            speed.setRange(0.7, 1.3)
+            speed.setSingleStep(0.05)
+            speed.setValue(config.speed)
+            speed.setSuffix(" ×")
+            speed.valueChanged.connect(lambda value: self.engine.command("speed", value))
+            speed_row.addWidget(speed, 1)
+            layout.addLayout(speed_row)
             recognition_row = QHBoxLayout()
             recognition_row.addWidget(QLabel("Recognition"))
             self.recognition = QComboBox()
+            self.recognition.addItem("Whisper Small · accuracy", "whisper_small_en")
+            self.recognition.addItem("Whisper Base · faster", "whisper_base_en")
             self.recognition.addItem("Small · more accurate", "small_streaming")
             self.recognition.addItem("Tiny · lower CPU", "tiny_streaming")
             self.recognition.setCurrentIndex(self.recognition.findData(config.stt_model))
@@ -132,6 +156,44 @@ def main():
             )
             recognition_row.addWidget(self.recognition, 1)
             layout.addLayout(recognition_row)
+            mic_row = QHBoxLayout()
+            mic_row.addWidget(QLabel("Microphone"))
+            self.microphone = QComboBox()
+            self.microphone.addItem("System default", None)
+            import sounddevice as sd
+
+            try:
+                for index, info in enumerate(sd.query_devices()):
+                    if info["max_input_channels"]:
+                        self.microphone.addItem(info["name"], index)
+            except sd.PortAudioError:
+                self.notice_text = "No microphone devices found. Check audio settings."
+            index = self.microphone.findData(config.input_device)
+            if index < 0:
+                self.microphone.addItem(str(config.input_device), config.input_device)
+                index = self.microphone.count() - 1
+            self.microphone.setCurrentIndex(index)
+            self.microphone.currentIndexChanged.connect(
+                lambda _: self.engine.command("input_device", self.microphone.currentData())
+            )
+            mic_row.addWidget(self.microphone, 1)
+            self.mic_test = QPushButton("Test mic")
+            self.mic_test.clicked.connect(
+                lambda: self.engine.command("pause" if self.engine.testing else "mic_test")
+            )
+            mic_row.addWidget(self.mic_test)
+            layout.addLayout(mic_row)
+            level_row = QHBoxLayout()
+            self.level = QProgressBar()
+            self.level.setRange(0, 60)
+            self.level.setValue(0)
+            self.level.setTextVisible(False)
+            self.level.setMaximumHeight(7)
+            self.level_label = QLabel("Mic level")
+            self.level_label.setObjectName("muted")
+            level_row.addWidget(self.level, 1)
+            level_row.addWidget(self.level_label)
+            layout.addLayout(level_row)
             proactive = QHBoxLayout()
             proactive.addWidget(QLabel("Quiet check-in"))
             interval = QComboBox()
@@ -189,9 +251,11 @@ def main():
                 QPushButton:hover { background: #39463c; }
                 QPushButton:disabled { color: #778078; }
                 QPushButton#primary { background: #c5e4ae; color: #1b291c; font-weight: 600; }
-                QLineEdit, QComboBox { background: #202724; border: 1px solid #465349;
+                QLineEdit, QComboBox, QDoubleSpinBox { background: #202724; border: 1px solid #465349;
                     border-radius: 6px; padding: 9px; }
                 QCheckBox { spacing: 7px; }
+                QProgressBar { background: #2b352f; border: none; border-radius: 3px; }
+                QProgressBar::chunk { background: #c5e4ae; border-radius: 3px; }
             """)
             self.render()
             self.timer = QTimer(self)
@@ -272,16 +336,42 @@ def main():
                     self.notice.setText(data)
                 elif name == "memory":
                     self.ram.setText(f"{data:.0f} MB")
+                elif name == "tts_changed":
+                    self.voice.blockSignals(True)
+                    self.voice.clear()
+                    self.voice.addItems(data["voices"])
+                    self.voice.setCurrentText(data["voice"])
+                    self.voice.blockSignals(False)
+                    self.speed.setValue(data["speed"])
+                elif name == "level":
+                    db, peak = data
+                    self.level.setValue(int(max(0, min(60, db + 60))))
+                    self.level_label.setText(
+                        "Clipping"
+                        if peak >= 0.98
+                        else "Low / quiet"
+                        if db < -45
+                        else f"{db:.0f} dB"
+                    )
                 elif name == "cleared":
                     self.messages.clear()
                     self.current_reply = ""
                     self.render()
             self.preview.setEnabled(not self.engine.busy and not self.focus.isChecked())
             self.recognition.setEnabled(not self.engine.active and not self.engine.busy)
+            self.tts_engine.setEnabled(not self.engine.active and not self.engine.busy)
+            self.microphone.setEnabled(not self.engine.active and not self.engine.busy)
+            self.mic_test.setEnabled(
+                self.engine.testing or (not self.engine.active and not self.engine.busy)
+            )
+            self.mic_test.setText("Stop test" if self.engine.testing else "Test mic")
 
         def closeEvent(self, event):
             self.timer.stop()
             self.engine.command("quit")
+            self.engine.thread.join(timeout=2)
+            if self.engine.response_thread:
+                self.engine.response_thread.join(timeout=2)
             event.accept()
 
     app = QApplication(sys.argv[:1])
@@ -292,4 +382,9 @@ def main():
         os.makedirs("artifacts", exist_ok=True)
         QTimer.singleShot(400, lambda: window.grab().save("artifacts/ui-preview.png"))
         QTimer.singleShot(800, window.close)
-    sys.exit(app.exec())
+    exit_code = app.exec()
+    # Dispose of widgets while QApplication is still alive, before Python
+    # teardown and native-library finalizers in the packaged app.
+    window.deleteLater()
+    app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    sys.exit(exit_code)
