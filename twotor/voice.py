@@ -6,6 +6,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .config import VOICES
+
 
 class SpeechToText:
     def __init__(self, config, callback, progress=lambda *args: None):
@@ -106,10 +108,11 @@ class TextToSpeech:
         # Warm up without playing anything.
         self.generate("Hello.")
 
-    def generate(self, text):
+    def generate(self, text, voice=None):
+        voice = voice or self.config.voice
+        if voice not in VOICES:
+            raise ValueError("Unknown TTS voice")
         return np.asarray(
-            self.model.generate(
-                text, voice=self.config.voice, speed=self.config.speed, clean_text=True
-            ),
+            self.model.generate(text, voice=voice, speed=self.config.speed, clean_text=True),
             dtype=np.float32,
         ).reshape(-1)

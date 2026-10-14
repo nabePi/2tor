@@ -4,6 +4,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+VOICES = ("Bella", "Jasper", "Luna", "Bruno", "Rosie", "Hugo", "Kiki", "Leo")
+
 
 def device(value: str):
     value = value.strip()
@@ -57,7 +59,7 @@ class Config:
             "KittenML/kitten-tts-mini-0.8",
         }:
             raise ValueError("TTS_MODEL must be a supported lightweight ONNX model")
-        if cfg.voice not in {"Bella", "Jasper", "Luna", "Bruno", "Rosie", "Hugo", "Kiki", "Leo"}:
+        if cfg.voice not in VOICES:
             raise ValueError("Unknown TTS_VOICE")
         if not 0.7 <= cfg.speed <= 1.3 or not 1 <= cfg.threads <= 4:
             raise ValueError("TTS_SPEED must be 0.7–1.3; TTS_THREADS must be 1–4")

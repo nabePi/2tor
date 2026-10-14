@@ -5,6 +5,7 @@ import time
 import psutil
 import sounddevice as sd
 
+from .config import VOICES
 from .conversation import IdlePolicy, SentenceBuffer
 from .llm import DeepSeek
 from .voice import SpeechToText, TextToSpeech
@@ -38,9 +39,11 @@ class Engine:
         self.busy = False
         self.speaking = False
         self.generation = 0
+        self.work_generation = None
         self.capture = None
         self.stt = None
         self.tts = None
+        self.voice = config.voice
         self.history = []
         self.policy = IdlePolicy(config.proactive_seconds, time.monotonic())
         self.thread = threading.Thread(target=self.run, name="2tor-audio", daemon=True)
@@ -195,9 +198,11 @@ class Engine:
         self.stt.reset()
         self.generation += 1
         generation = self.generation
+        self.work_generation = generation
         self.cancel = threading.Event()
         cancel = self.cancel
         history = list(self.history)
+        voice = self.voice  # Keep one voice throughout this reply.
         if proactive:
             self.policy.prompted(time.monotonic())
         self.emit("state", "Thinking")
@@ -217,7 +222,7 @@ class Engine:
                             continue
                         if text is None:
                             break
-                        audio = tts.generate(text)
+                        audio = tts.generate(text, voice=voice)
                         if cancel.is_set():
                             break
                         self.emit("state", "Speaking", generation)
@@ -272,14 +277,79 @@ class Engine:
         self.response_thread = threading.Thread(target=pipeline, name="2tor-reply", daemon=True)
         self.response_thread.start()
 
+    def _preview(self, voice):
+        if voice not in VOICES:
+            self.emit("error", "Unknown TTS voice")
+            return
+        if self.busy:
+            self.emit("notice", "Stop or finish the current reply before previewing a voice.")
+            return
+        if self.focus:
+            self.emit("notice", "Turn off Focus / mute to hear a voice preview.")
+            return
+        self.voice = voice
+        self.busy = True
+        self.listen.clear()
+        self._drain_audio()
+        self.pending = ""
+        self.speaking = False
+        if self.stt:
+            self.stt.reset()
+        self.generation += 1
+        generation = self.generation
+        self.work_generation = generation
+        self.cancel = threading.Event()
+        cancel = self.cancel
+        self.emit("state", "Loading voice sample…", generation)
+
+        def preview():
+            errors = []
+            try:
+                if self.tts is None:
+                    self.emit("notice", "First preview downloads the local TTS model.", generation)
+                    self.tts = TextToSpeech(self.config)
+                if cancel.is_set():
+                    return
+                if memory_mb() > self.config.memory_limit_mb:
+                    raise RuntimeError("Memory target exceeded; restart 2tor before previewing.")
+                text = (
+                    f"Hi, I'm {voice}, your English conversation partner. "
+                    "How is your day going? Let's practice a little English together."
+                )
+                audio = self.tts.generate(text, voice=voice)
+                if cancel.is_set():
+                    return
+                self.emit("state", f"Previewing {voice}", generation)
+                sd.play(audio, 24000, device=self.config.output_device)
+                while sd.get_stream().active:
+                    if cancel.wait(0.04):
+                        sd.stop()
+                        break
+                if not cancel.is_set():
+                    cancel.wait(0.35)
+            except Exception as exc:
+                errors.append(f"Voice preview failed: {exc}")
+                cancel.set()
+                sd.stop()
+            finally:
+                data = {"text": "", "errors": errors, "cancelled": cancel.is_set(), "preview": True}
+                self.results.put((data, generation))
+                self.emit("done", data, generation)
+
+        self.response_thread = threading.Thread(target=preview, name="2tor-preview", daemon=True)
+        self.response_thread.start()
+
     def finish(self, data, generation):
-        # Called on the engine owner thread, through a UI command.
+        # Called on the engine owner thread, independently of UI polling.
         if generation != self.generation:
-            if self.response_thread and not self.response_thread.is_alive():
+            if generation == self.work_generation:
                 self.busy = False
+                self.emit(
+                    "state", "Focus" if self.focus else "Listening" if self.active else "Paused"
+                )
             return
         self.busy = False
-        if data["text"]:
+        if data["text"] and not data.get("preview"):
             text = data["text"]
             if data["cancelled"]:
                 text += " [interrupted]"
@@ -290,10 +360,11 @@ class Engine:
             self.emit("error", error)
         self.policy.last_activity = time.monotonic()
         self._drain_audio()
-        self.stt.reset()
+        if self.stt:
+            self.stt.reset()
         if self.active and not self.focus:
             self.listen.set()
-        self.emit("state", "Focus" if self.focus else "Listening" if self.active else "Paused")
+        self.emit("state", "Focus" if self.focus else "Listening" if self.active else "Ready")
 
     def _save(self, role, text):
         if not self.config.save_history:
@@ -331,6 +402,14 @@ class Engine:
                     name, data = self.commands.get_nowait()
                     if name == "start":
                         self._start()
+                    elif name == "voice":
+                        if data in VOICES:
+                            self.voice = data
+                            self.emit("notice", f"{data} will speak the next reply.")
+                        else:
+                            self.emit("error", "Unknown TTS voice")
+                    elif name == "preview":
+                        self._preview(data)
                     elif name == "pause":
                         self._pause()
                     elif name == "stop":

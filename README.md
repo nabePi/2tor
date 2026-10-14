@@ -195,6 +195,16 @@ Gunakan script setup untuk instalasi KittenTTS. Script memasang `kittenml==0.9.4
 
 ## Conversation
 
+- **Voice**: pilih Bella, Jasper, Luna, Bruno, Rosie, Hugo, Kiki, atau Leo.
+  Pilihan langsung dipakai pada jawaban berikutnya; jawaban yang sudah berjalan
+  tetap memakai suara sebelumnya. Saat aplikasi dibuka ulang, default kembali
+  mengikuti `TTS_VOICE` di `.env`.
+- **Listen to sample**: dengarkan contoh bahasa Inggris menggunakan suara yang
+  sedang dipilih. Bisa dicoba sebelum Start session, tanpa API key atau mikrofon.
+  Contoh dibuat TTS lokal; pertama kali digunakan tetap perlu mengunduh model.
+  Mikrofon dijeda selama preview dan dibuka kembali jika sesi sebelumnya aktif.
+  Preview tidak masuk riwayat chat. Gunakan Stop reply untuk menghentikan contoh;
+  nonaktifkan Focus / mute sebelum mencoba suara.
 - Start session: load voices, open microphone, greet you and open an English topic.
 - Hands-free listening: partial transcript appears while you talk. A completed
   segment waits another 0.7 seconds so short pauses can join into one turn.

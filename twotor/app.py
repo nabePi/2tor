@@ -4,7 +4,7 @@ import os
 import queue
 import sys
 
-from .config import Config
+from .config import VOICES, Config
 
 
 def main():
@@ -106,6 +106,20 @@ def main():
             controls.addStretch()
             controls.addWidget(pin)
             layout.addLayout(controls)
+            voice_row = QHBoxLayout()
+            voice_row.addWidget(QLabel("Voice"))
+            self.voice = QComboBox()
+            self.voice.addItems(VOICES)
+            self.voice.setCurrentText(config.voice)
+            self.voice.currentTextChanged.connect(lambda name: self.engine.command("voice", name))
+            self.preview = QPushButton("Listen to sample")
+            self.preview.setToolTip("Hear this voice locally, without a DeepSeek API key")
+            self.preview.clicked.connect(
+                lambda: self.engine.command("preview", self.voice.currentText())
+            )
+            voice_row.addWidget(self.voice, 1)
+            voice_row.addWidget(self.preview)
+            layout.addLayout(voice_row)
             proactive = QHBoxLayout()
             proactive.addWidget(QLabel("Quiet check-in"))
             interval = QComboBox()
@@ -213,6 +227,8 @@ def main():
                 except queue.Empty:
                     break
                 if name == "done":
+                    if data.get("preview"):
+                        continue
                     if generation == self.generation:
                         if data["text"]:
                             text = data["text"] + (" [interrupted]" if data["cancelled"] else "")
@@ -235,11 +251,11 @@ def main():
                     self.partial.setText(data)
                 elif name == "state":
                     self.status.setText("●  " + data)
-                    self.running = data not in {"Paused", "Ready"} and not data.startswith(
-                        "Loading"
-                    )
+                    self.running = self.engine.active
                     self.start.setText("Pause session" if self.running else "Start session")
-                    self.start.setEnabled(not data.startswith("Loading"))
+                    self.start.setEnabled(
+                        self.running or (not self.engine.busy and not data.startswith("Loading"))
+                    )
                 elif name in {"error", "notice"}:
                     self.notice.setText(data)
                 elif name == "memory":
@@ -248,6 +264,7 @@ def main():
                     self.messages.clear()
                     self.current_reply = ""
                     self.render()
+            self.preview.setEnabled(not self.engine.busy and not self.focus.isChecked())
 
         def closeEvent(self, event):
             self.timer.stop()
