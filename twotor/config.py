@@ -15,7 +15,14 @@ KOKORO_VOICES = {
     "Fenrir": "am_fenrir",
     "Emma": "bf_emma",
 }
-STT_MODELS = ("whisper_small_en", "whisper_base_en", "tiny_streaming", "small_streaming")
+STT_MODELS = (
+    "whisper_small",
+    "whisper_base",
+    "whisper_small_en",
+    "whisper_base_en",
+    "tiny_streaming",
+    "small_streaming",
+)
 EDGE_VOICES = {
     "Jenny": "en-US-JennyNeural",
     "Emma": "en-US-EmmaMultilingualNeural",
@@ -48,8 +55,8 @@ class Config:
     api_key: str = ""
     base_url: str = "https://api.deepseek.com"
     model: str = "deepseek-flash"
-    stt_model: str = "whisper_small_en"
-    stt_end_pause: float = 0.65
+    stt_model: str = "whisper_small"
+    stt_end_pause: float = 5.0
     stt_keyterms: tuple[str, ...] = ()
     stt_threads: int = 2
     tts_model: str = "kokoro_int8"
@@ -102,8 +109,8 @@ class Config:
             raise ValueError("Unknown STT_MODEL")
         if not 1 <= cfg.stt_threads <= 4:
             raise ValueError("STT_THREADS must be 1–4")
-        if not 0.5 <= cfg.stt_end_pause <= 3:
-            raise ValueError("STT_END_PAUSE_SECONDS must be 0.5–3")
+        if not 0.5 <= cfg.stt_end_pause <= 15:
+            raise ValueError("STT_END_PAUSE_SECONDS must be 0.5–15")
         if len(cfg.stt_keyterms) > 50 or any(len(term) > 80 for term in cfg.stt_keyterms):
             raise ValueError("STT_KEYTERMS supports at most 50 terms, each up to 80 characters")
         if cfg.tts_model not in {

@@ -8,7 +8,7 @@ import psutil
 import sounddevice as sd
 
 from .config import STT_MODELS, voices_for_model
-from .conversation import IdlePolicy, SentenceBuffer
+from .conversation import IdlePolicy, SentenceBuffer, is_thinking_sound
 from .llm import DeepSeek
 from .voice import SpeechToText, TextToSpeech
 
@@ -45,6 +45,7 @@ class Engine:
         self.capture = None
         self.stt = None
         self.stt_model = config.stt_model
+        self.end_pause = config.stt_end_pause
         self.tts = None
         self.tts_model = config.tts_model
         self.voice = config.voice
@@ -107,6 +108,7 @@ class Engine:
         if name in {"speech", "partial"}:
             self.speaking = True
             self.speech_at = now
+            self.pending_at = now
             self.policy.activity(now)
         if name == "partial":
             self.emit("partial", data)
@@ -117,11 +119,40 @@ class Engine:
                     self.emit("user", data.strip())
                 self.emit("partial", "Mic test · speak again; nothing is sent to DeepSeek.")
                 return
-            if data.strip():
+            # Even an untranscribed hum means the user is still taking their turn.
+            self.pending_at = now
+            self.policy.activity(now)
+            if data.strip() and not is_thinking_sound(data):
                 self.pending = (self.pending + " " + data.strip()).strip()[:4000]
-                self.pending_at = now
-                self.policy.activity(now)
-            self.emit("partial", "")
+            self.emit(
+                "partial",
+                f"Take your time · waiting for {self.end_pause:g} seconds of quiet…",
+            )
+
+    def _accept_text(self, text):
+        text = text.strip()[:4000]
+        self.history.append({"role": "user", "content": text})
+        self.history = self.history[-20:]
+        self._save("user", text)
+        self.emit("user", text)
+        self.policy.activity(time.monotonic())
+        self._reply()
+
+    def _commit_pending(self, now):
+        if (
+            self.pending
+            and not self.speaking
+            and not self.busy
+            and self.active
+            and not self.testing
+            and not self.focus
+            and self.listen.is_set()
+            and self.audio.empty()
+            and self.commands.empty()
+            and now - self.pending_at >= self.end_pause
+        ):
+            text, self.pending = self.pending, ""
+            self._accept_text(text)
 
     def _drain_audio(self):
         while True:
@@ -476,6 +507,10 @@ class Engine:
                     elif name == "speed":
                         if 0.7 <= float(data) <= 1.3:
                             self.speed = float(data)
+                    elif name == "end_pause":
+                        if 0.5 <= float(data) <= 15:
+                            self.end_pause = float(data)
+                            self.pending_at = time.monotonic()
                     elif name == "tts_model":
                         if self.active or self.busy:
                             self.emit("notice", "Pause the session before changing TTS.")
@@ -547,13 +582,7 @@ class Engine:
                             and not self.focus
                             and data.strip()
                         ):
-                            text = data.strip()[:4000]
-                            self.history.append({"role": "user", "content": text})
-                            self.history = self.history[-20:]
-                            self._save("user", text)
-                            self.emit("user", text)
-                            self.policy.activity(time.monotonic())
-                            self._reply()
+                            self._accept_text(data)
                         else:
                             self.emit(
                                 "notice", "Start a session and finish the current reply first."
@@ -600,17 +629,7 @@ class Engine:
                     self.stt.reset()
                     self._drain_audio()
                     next_idle_reset = now + 30
-                if (
-                    self.pending
-                    and not self.speaking
-                    and not self.busy
-                    and self.active
-                    and not self.focus
-                    and now - self.pending_at > self.config.stt_end_pause
-                ):
-                    text = self.pending
-                    self.commands.put_nowait(("text", text))
-                    self.pending = ""
+                self._commit_pending(now)
                 if self.policy.due(
                     now,
                     active=self.active and not self.testing,

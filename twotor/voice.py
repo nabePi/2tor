@@ -141,8 +141,9 @@ class WhisperSpeechToText:
 
         os.environ.setdefault("MOONSHINE_ORT_SINGLE_THREAD", "1")
         self.callback = callback
-        progress(0, "Loading Whisper English INT8; first use downloads weights")
-        model = "small.en" if config.stt_model == "whisper_small_en" else "base.en"
+        model = config.stt_model.removeprefix("whisper_").replace("_en", ".en")
+        self.language = "en" if model.endswith(".en") else None
+        progress(0, f"Loading Whisper {model} INT8; first use downloads weights")
         self.model = WhisperModel(
             model, device="cpu", compute_type="int8", cpu_threads=config.stt_threads, num_workers=1
         )
@@ -171,9 +172,18 @@ class WhisperSpeechToText:
                 self.callback("transcript", "")
                 return
             self.callback("partial", "Transcribing locally…")
+            language = self.language
+            if language is None:
+                # This companion only needs English/Indonesian. Short clips can
+                # otherwise be misidentified as an unrelated language/script.
+                _, _, probabilities = self.model.detect_language(audio=audio)
+                candidates = [(prob, lang) for lang, prob in probabilities if lang in {"en", "id"}]
+                language = max(candidates, default=(0, "en"))[1]
             segments, _ = self.model.transcribe(
                 audio,
-                language="en",
+                language=language,
+                task="transcribe",
+                multilingual=False,
                 beam_size=5,
                 best_of=1,
                 temperature=0.0,
@@ -191,7 +201,7 @@ class WhisperSpeechToText:
         if self.stream:
             self.stream.remove_all_listeners()
             self.stream.close()
-        self.stream = self.transcriber.create_stream(update_interval=0.5)
+        self.stream = self.transcriber.create_stream(update_interval=0.1)
         self.stream.add_listener(self._event)
         self.stream.start()
 

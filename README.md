@@ -7,7 +7,7 @@ Aplikasi desktop untuk menemani kamu bekerja sambil melatih percakapan bahasa In
 | Komponen | Default |
 |---|---|
 | Desktop | Python 3.11 + PySide6 Qt Widgets |
-| STT | faster-whisper `small.en`, CPU INT8, beam search 5 |
+| STT | faster-whisper `small` multilingual (Inggris/Indonesia), CPU INT8, beam search 5 |
 | Deteksi ucapan | VAD native Moonshine, tanpa memuat model ASR Moonshine pada mode Whisper |
 | LLM | DeepSeek `deepseek-flash`, streaming, thinking dinonaktifkan |
 | TTS | Kokoro v1.0 INT8 melalui ONNX Runtime, suara Heart, tempo 1.05× |
@@ -83,7 +83,7 @@ nano .env
 bash scripts/run.sh
 ```
 
-Periksa input/output pada **Settings → Sound**. Pada X390 yang sedang menjalankan pekerjaan berat, coba **Whisper Base · faster** dan `STT_THREADS=1` atau `TTS_THREADS=1`. Base mengutamakan kecepatan; uji kembali akurasinya pada ucapanmu.
+Periksa input/output pada **Settings → Sound**. Pada X390 yang sedang menjalankan pekerjaan berat, coba **Whisper Base · bilingual, faster** dan `STT_THREADS=1` atau `TTS_THREADS=1`. Base mengutamakan kecepatan; uji kembali akurasinya pada ucapanmu.
 
 ## Memperbarui instalasi lama
 
@@ -92,14 +92,14 @@ git pull origin main
 bash scripts/setup.sh
 ```
 
-Setup tidak menimpa `.env` lama. Untuk mencoba mesin baru tanpa mengedit konfigurasi, **Pause session**, pilih **Recognition: Whisper Small · accuracy**, lalu pilih **Kokoro** pada baris Voice dan suara **Heart**. Pilihan engine dapat diubah ketika sesi berhenti.
+Setup tidak menimpa `.env` lama. Jika memakai konfigurasi lama, ganti `STT_MODEL=whisper_small` dan `STT_END_PAUSE_SECONDS=5` untuk dukungan Indonesia dan jeda berpikir baru. Untuk mencoba mesin baru tanpa mengedit konfigurasi, **Pause session**, pilih **Recognition: Whisper Small · English + Indonesia**, lalu pilih **Kokoro** pada baris Voice dan suara **Heart**. Pilihan engine dapat diubah ketika sesi berhenti.
 
 Untuk menjadikan konfigurasi baru sebagai default setelah restart, sesuaikan baris berikut di `.env` yang dipakai:
 
 ```dotenv
-STT_MODEL=whisper_small_en
+STT_MODEL=whisper_small
 STT_THREADS=2
-STT_END_PAUSE_SECONDS=0.65
+STT_END_PAUSE_SECONDS=5
 TTS_MODEL=kokoro_int8
 TTS_VOICE=Heart
 TTS_SPEED=1.05
@@ -162,7 +162,8 @@ bash scripts/run.sh --devices
 | Dropdown suara | Mengganti suara pada jawaban berikutnya |
 | Listen to sample | Mendengarkan contoh tanpa key DeepSeek/mikrofon; Edge memakai internet |
 | Speaking speed | Mengatur tempo 0.7×–1.3×, berlaku pada jawaban/preview berikutnya |
-| Recognition | Whisper Small/Base atau Moonshine Small/Tiny; ubah saat sesi berhenti |
+| Recognition | Whisper Small/Base bilingual atau English only, Moonshine Inggris; ubah saat sesi berhenti |
+| Thinking pause | Tunggu default 5 detik setelah transkripsi; filler mengulang hitungan |
 | Microphone / Test mic | Memilih input dan menguji transkrip lokal |
 | Quiet check-in / New topic | Mengatur interval ajakan ngobrol atau membuka topik sekarang |
 | Keep on top | Menjaga jendela terlihat di atas aplikasi lain |
@@ -175,9 +176,13 @@ Suara Edge: **Jenny, Emma, Aria, Guy, Andrew, Brian, Ava, Christopher** (English
 Nama Emma di Edge dan Kokoro merujuk ke suara yang berbeda. Pilihan layanan
 dapat berubah; jika suatu suara tidak tersedia, coba suara Edge lainnya.
 
-Whisper mendekode segmen setelah jeda ucapan, sehingga tidak menampilkan transkrip kata demi kata saat kamu masih berbicara. Model `small.en` memakai CPU INT8 dan beam search; latensinya dapat lebih tinggi daripada Moonshine. Base tersedia untuk CPU laptop yang sibuk. Istilah khusus dapat dibantu melalui `STT_KEYTERMS`, default kosong.
+Whisper mendekode segmen setelah jeda ucapan, sehingga tidak menampilkan transkrip kata demi kata saat kamu masih berbicara. Default model `small` multilingual memakai CPU INT8 dan beam search, dengan pemilihan bahasa otomatis antara Inggris/Indonesia dan transkripsi dalam bahasa aslinya; latensinya dapat lebih tinggi daripada Moonshine. Base tersedia untuk CPU laptop yang sibuk. Istilah khusus dapat dibantu melalui `STT_KEYTERMS`, default kosong.
 
-Stream dipertahankan selama satu giliran, dengan tambahan jeda default 0.65 detik setelah segmen selesai agar jeda pendek dapat digabung. Naikkan `STT_END_PAUSE_SECONDS` jika kalimat terkirim terlalu cepat. Jeda ini menambah waktu sebelum respons.
+Stream dipertahankan selama satu giliran. Setelah segmen selesai ditranskripsi, 2tor menunggu **5 detik** sebelum mengirim giliran ke AI. Jika kamu melanjutkan bicara atau VAD mendeteksi bunyi berpikir, hitungan diulang. Transkrip filler saja seperti “hmm”, “hemm”, “enggg”, “um”, atau “uh” tidak dikirim ke AI; ucapan bermakna yang mengandung filler tetap dipertahankan. Kalimat sebelum dan sesudah jeda digabung selama belum terkirim. Filler yang tidak terdeteksi mikrofon/VAD atau salah ditranskripsi sebagai kata lain belum tentu dikenali.
+
+Atur **Thinking pause** di aplikasi (0.5–15 detik), termasuk saat sesi aktif. Perubahan UI berlaku untuk sesi aplikasi; ubah `STT_END_PAUSE_SECONDS=5` di `.env` untuk nilai saat startup. Waktu total dari akhir suara ke jawaban juga mencakup VAD, transkripsi lokal, DeepSeek, dan TTS.
+
+**Bantuan bahasa Indonesia:** pilih **Whisper Small · English + Indonesia** atau **Whisper Base · bilingual, faster**. Kamu boleh berkata “Saya lupa bahasa Inggrisnya…” atau mencampur bahasa. AI diminta membantu singkat dalam bahasa Indonesia, memberikan ungkapan Inggris yang alami, lalu melanjutkan latihan. Varian `whisper_small_en`, `whisper_base_en`, dan Moonshine hanya untuk Inggris. Deteksi bahasa pada frasa sangat pendek dan pergantian bahasa dalam satu kalimat masih dapat keliru. Kokoro/Kitten yang tersedia di aplikasi ini berfokus pada pelafalan Inggris; untuk balasan bilingual, coba **Edge → Ava**, lalu dengarkan preview. Edge memakai internet.
 
 Jawaban DeepSeek dikirim ke TTS per kalimat. Kalimat berikutnya disintesis **sambil kalimat sebelumnya diputar**, dengan antrean audio terbatas, agar jeda antarkalimat tidak menunggu sintesis baru. AI diminta membuka dengan kalimat singkat. Waktu respons tetap mencakup deteksi akhir ucapan, STT, jaringan DeepSeek, dan sintesis pertama.
 
@@ -192,9 +197,9 @@ Check-in default 90 detik. Ajakan yang tidak dijawab memperpanjang jeda menjadi 
 | `DEEPSEEK_API_KEY` | Wajib untuk percakapan; tes mic/preview tidak memerlukan key |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com`, harus HTTPS |
 | `DEEPSEEK_MODEL` | `deepseek-flash` |
-| `STT_MODEL` | `whisper_small_en`; alternatif `whisper_base_en`, `small_streaming`, `tiny_streaming` |
+| `STT_MODEL` | `whisper_small` multilingual; alternatif `whisper_base`; Inggris saja: `whisper_small_en`, `whisper_base_en`, `small_streaming`, `tiny_streaming` |
 | `STT_THREADS` | `2`, rentang 1–4 untuk Whisper |
-| `STT_END_PAUSE_SECONDS` | `0.65`, rentang 0.5–3 |
+| `STT_END_PAUSE_SECONDS` | `5`, rentang 0.5–15; dapat diubah lewat Thinking pause |
 | `STT_KEYTERMS` | Istilah dipisahkan koma, maksimal 50 istilah × 80 karakter; kosong untuk percakapan umum |
 | `MOONSHINE_ORT_SINGLE_THREAD` | `1`, inference native Moonshine satu thread |
 | `TTS_MODEL` | `kokoro_int8`; alternatif `edge_tts` atau Kitten Nano/Micro/Mini ONNX |
@@ -222,6 +227,8 @@ Hanya satu model ASR dipakai: pada mode Whisper, Moonshine hanya mendeteksi ucap
 Uji Mac pada **48 giliran sintetis** dengan Whisper Small INT8 + Kokoro INT8 mencatat puncak RSS sekitar **1278 MiB / 1.34 GB**. Sintesis lebih cepat daripada durasi audio. Uji awal mencatat sekitar 0.2–0.3 detik untuk sintesis frasa pendek, sedangkan komputasi STT sekitar 1.3–1.4 detik per klip. Ini bukan hasil pengujian aksenmu, kualitas natural suara, latency jaringan, mikrofon, UI, maupun performa X390.
 
 Target seluruh aplikasi kurang dari 3 GB. Pemantau RSS process tree setiap lima detik menjeda sesi di atas batas. Ini batas lunak, bukan pembatas OS; alokasi dapat sesaat melampaui ambang dan pause tidak melepas semua cache. Tutup aplikasi untuk melepas memori.
+
+Uji pembaruan bilingual di Mac: empat contoh Inggris dengan Whisper `small` multilingual + Kokoro menghasilkan transkrip yang sesuai, termasuk “Test, test, test.”; puncak RSS pada uji terakhir sekitar **1190 MiB**. Uji terpisah memakai contoh suara Indonesia Edge Gadis berhasil menangkap “Saya masih mikir. Saya lupa bahasa Inggrisnya. Bisa bantu saya?”, dengan puncak sekitar **1007 MiB** untuk STT + Edge. Kalimat campuran Inggris/Indonesia dalam uji sintetis masih dapat salah. Angka ini tidak mencakup UI/mikrofon dan bukan jaminan hasil pada aksenmu atau X390.
 
 ```bash
 .venv/bin/python -m pytest -q

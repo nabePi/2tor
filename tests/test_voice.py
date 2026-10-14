@@ -36,6 +36,7 @@ def test_whisper_preserves_best_and_uses_english_beam_search():
     output = []
     stt.callback = lambda name, text: output.append((name, text))
     stt.keyterms = None
+    stt.language = "en"
 
     class Model:
         def transcribe(self, audio, **options):
@@ -48,6 +49,28 @@ def test_whisper_preserves_best_and_uses_english_beam_search():
     stt.model = Model()
     stt._event(LineCompleted(SimpleNamespace(audio_data=[0.01] * 32000), 1))
     assert output[-1] == ("transcript", "Best, best, best.")
+
+
+def test_bilingual_whisper_transcribes_without_forcing_english():
+    stt = WhisperSpeechToText.__new__(WhisperSpeechToText)
+    output = []
+    stt.callback = lambda name, text: output.append((name, text))
+    stt.keyterms = None
+    stt.language = None
+
+    class Model:
+        def detect_language(self, **options):
+            return "hi", 0.4, [("hi", 0.4), ("id", 0.35), ("en", 0.25)]
+
+        def transcribe(self, audio, **options):
+            assert options["language"] == "id"
+            assert options["task"] == "transcribe"
+            assert options["multilingual"] is False
+            return iter([SimpleNamespace(text="Saya belum tahu.", no_speech_prob=0.1)]), None
+
+    stt.model = Model()
+    stt._event(LineCompleted(SimpleNamespace(audio_data=[0.01] * 32000), 1))
+    assert output[-1] == ("transcript", "Saya belum tahu.")
 
 
 def test_whisper_silence_never_calls_decoder():
