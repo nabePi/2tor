@@ -37,7 +37,7 @@ def test_pipeline_completes_without_ui_and_focus_cancels(monkeypatch):
         def __init__(self, *args):
             pass
 
-        def generate(self, text, voice=None, speed=None):
+        def generate(self, text, voice=None, speed=None, cancel=None):
             voices.append(voice)
             return np.zeros(2400, dtype=np.float32)
 
@@ -112,7 +112,7 @@ def test_preview_is_keyless_local_and_reuses_tts(monkeypatch):
         def __init__(self, *args):
             created.append(self)
 
-        def generate(self, text, voice=None, speed=None):
+        def generate(self, text, voice=None, speed=None, cancel=None):
             voices.append(voice)
             return np.zeros(2400, dtype=np.float32)
 
@@ -163,7 +163,7 @@ def test_stop_during_preview_loading_prevents_late_playback(monkeypatch):
             loading.set()
             release.wait(2)
 
-        def generate(self, text, voice=None, speed=None):
+        def generate(self, text, voice=None, speed=None, cancel=None):
             return np.zeros(2400, dtype=np.float32)
 
     monkeypatch.setattr(module, "TextToSpeech", TTS)
@@ -202,7 +202,7 @@ def test_preview_during_session_restores_listening(monkeypatch):
         def __init__(self, *args):
             pass
 
-        def generate(self, text, voice=None, speed=None):
+        def generate(self, text, voice=None, speed=None, cancel=None):
             assert not engine.listen.is_set()
             return np.zeros(2400, dtype=np.float32)
 
@@ -290,7 +290,7 @@ def test_next_sentence_is_synthesized_while_previous_audio_is_playing(monkeypatc
         def __init__(self, *args):
             self.calls = 0
 
-        def generate(self, text, voice=None, speed=None):
+        def generate(self, text, voice=None, speed=None, cancel=None):
             self.calls += 1
             if self.calls == 2:
                 assert first_playing.wait(2)
@@ -341,7 +341,7 @@ def test_tts_switch_reloads_only_selected_engine_and_updates_voices(monkeypatch)
         def __init__(self, config):
             loaded.append((config.tts_model, config.voice))
 
-        def generate(self, text, voice=None, speed=None):
+        def generate(self, text, voice=None, speed=None, cancel=None):
             played.append((voice, speed))
             return np.zeros(24, dtype=np.float32)
 
@@ -359,6 +359,14 @@ def test_tts_switch_reloads_only_selected_engine_and_updates_voices(monkeypatch)
         wait_for(lambda: played and not engine.busy)
         assert loaded == [("kokoro_int8", "Heart")]
         assert played == [("Heart", 1.05)]
+        engine.command("tts_model", "edge_tts")
+        wait_for(lambda: engine.tts_model == "edge_tts")
+        assert engine.tts is None and engine.voice == "Jenny"
+        assert "Sonia" in engine.voices and "Heart" not in engine.voices
+        engine.command("preview", "Jenny")
+        wait_for(lambda: len(played) == 2 and not engine.busy)
+        assert loaded[-1] == ("edge_tts", "Jenny")
+        assert played[-1] == ("Jenny", 1.0)
     finally:
         engine.command("quit")
         engine.thread.join(timeout=3)

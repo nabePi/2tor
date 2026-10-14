@@ -1,4 +1,4 @@
-"""Local CPU engines. No torch imports, speaker identification, or saved audio."""
+"""Local STT, local ONNX TTS, and opt-in online Edge TTS. No saved audio."""
 
 import json
 import os
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .config import KOKORO_VOICES, voices_for_model
+from .config import EDGE_VOICES, KOKORO_VOICES, voices_for_model
 
 
 class SpeechToText:
@@ -74,6 +74,8 @@ class SpeechToText:
 
 class TextToSpeech:
     def __new__(cls, config):
+        if config.tts_model == "edge_tts":
+            return EdgeSpeech(config)
         if config.tts_model == "kokoro_int8":
             return KokoroSpeech(config)
         return super().__new__(cls)
@@ -118,7 +120,7 @@ class TextToSpeech:
         # Warm up without playing anything.
         self.generate("Hello.")
 
-    def generate(self, text, voice=None, speed=None):
+    def generate(self, text, voice=None, speed=None, cancel=None):
         voice = voice or self.config.voice
         if voice not in voices_for_model(self.config.tts_model):
             raise ValueError("Unknown TTS voice")
@@ -257,7 +259,7 @@ class KokoroSpeech:
         self.config = config
         self.generate("Hello.")
 
-    def generate(self, text, voice=None, speed=None):
+    def generate(self, text, voice=None, speed=None, cancel=None):
         voice_id = KOKORO_VOICES[voice or self.config.voice]
         audio, rate = self.model.create(
             text,
@@ -270,3 +272,86 @@ class KokoroSpeech:
         if rate != 24000:
             raise RuntimeError("Unexpected Kokoro sample rate")
         return np.asarray(audio, dtype=np.float32).reshape(-1)
+
+
+def decode_edge_audio(data):
+    """Decode MP3 in memory to the existing mono float32 24kHz playback format."""
+    import io
+
+    import av
+
+    chunks = []
+    with av.open(io.BytesIO(data), format="mp3") as container:
+        resampler = av.AudioResampler(format="fltp", layout="mono", rate=24000)
+        for frame in container.decode(audio=0):
+            for output in resampler.resample(frame):
+                chunks.append(output.to_ndarray().reshape(-1))
+        for output in resampler.resample(None):
+            chunks.append(output.to_ndarray().reshape(-1))
+    if not chunks:
+        raise RuntimeError("Edge TTS returned no decodable audio")
+    audio = np.concatenate(chunks).astype(np.float32, copy=False)
+    if len(audio) > 24000 * 60 or not np.isfinite(audio).all():
+        raise RuntimeError("Edge TTS audio exceeded the supported preview/chunk limits")
+    return audio
+
+
+class EdgeSpeech:
+    """Online Microsoft speech service; cancellation closes the network request."""
+
+    def __init__(self, config):
+        self.config = config  # No model downloads, network warm-up, or API key.
+
+    def generate(self, text, voice=None, speed=None, cancel=None):
+        import asyncio
+
+        import edge_tts
+
+        voice = voice or self.config.voice
+        if voice not in EDGE_VOICES:
+            raise ValueError("Unknown Edge TTS voice")
+        if cancel is not None and cancel.is_set():
+            return np.empty(0, dtype=np.float32)
+        rate = f"{round(((speed or self.config.speed) - 1) * 100):+d}%"
+
+        async def fetch():
+            data = bytearray()
+            communication = edge_tts.Communicate(
+                text, EDGE_VOICES[voice], rate=rate, connect_timeout=10, receive_timeout=15
+            )
+            async for chunk in communication.stream():
+                if chunk["type"] == "audio":
+                    data.extend(chunk["data"])
+                    if len(data) > 8 * 1024 * 1024:
+                        raise RuntimeError("Edge TTS audio response exceeded 8 MB")
+            if not data:
+                raise RuntimeError("Edge TTS returned no audio")
+            return bytes(data)
+
+        async def run():
+            task = asyncio.create_task(fetch())
+            try:
+                while not task.done():
+                    await asyncio.wait({task}, timeout=0.05)
+                    if cancel is not None and cancel.is_set():
+                        task.cancel()
+                return await task
+            finally:
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+        try:
+            data = asyncio.run(asyncio.wait_for(run(), timeout=25))
+        except asyncio.CancelledError:
+            return np.empty(0, dtype=np.float32)
+        except Exception as exc:
+            raise RuntimeError(
+                "Edge TTS unavailable. Check internet or select Kokoro/Kitten."
+            ) from exc
+        if cancel is not None and cancel.is_set():
+            return np.empty(0, dtype=np.float32)
+        return decode_edge_audio(data)

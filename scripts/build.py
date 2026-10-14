@@ -20,6 +20,7 @@ args = [
     "--collect-all=faster_whisper",
     "--collect-all=ctranslate2",
     "--collect-all=kokoro_onnx",
+    "--collect-all=edge_tts",
     "--collect-all=espeakng_loader",
     "--collect-data=kittenml",
     "--collect-data=phonemizer",

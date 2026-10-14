@@ -1,4 +1,4 @@
-"""Repeatable local voice smoke/soak test; never opens the microphone or calls an API."""
+"""Voice smoke/soak test without microphone or DeepSeek. Edge TTS uses the internet."""
 
 import argparse
 import json
@@ -17,7 +17,9 @@ def main(argv=None):
     parser.add_argument("--output", default="artifacts/benchmark.json")
     parser.add_argument("--env")
     parser.add_argument("--stt-model", choices=STT_MODELS)
-    parser.add_argument("--tts-model", choices=["kokoro_int8", "KittenML/kitten-tts-nano-0.8-int8"])
+    parser.add_argument(
+        "--tts-model", choices=["edge_tts", "kokoro_int8", "KittenML/kitten-tts-nano-0.8-int8"]
+    )
     args = parser.parse_args(argv)
     cfg = Config.load(args.env)
     if args.stt_model:
@@ -41,7 +43,9 @@ def main(argv=None):
         "tts_model": cfg.tts_model,
         "tts_threads": cfg.threads,
         "turns": [],
+        "tts_online": cfg.tts_model == "edge_tts",
         "note": "Synthetic English speech, no microphone, UI, network LLM or speaker playback. "
+        "Edge TTS sends synthetic phrases to Microsoft if selected. "
         "Measure again on Ubuntu and with your own accent.",
     }
     peak = [memory_mb()]

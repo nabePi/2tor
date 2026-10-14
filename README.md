@@ -2,7 +2,7 @@
 
 Aplikasi desktop untuk menemani kamu bekerja sambil melatih percakapan bahasa Inggris. Kamu berbicara lewat mikrofon, AI menjawab dengan suara, dan AI bisa membuka topik saat kamu diam.
 
-**Mikrofon → STT lokal → DeepSeek API → TTS lokal → speaker/headphone.**
+**Mikrofon → STT lokal → DeepSeek API → TTS lokal atau Edge TTS online → speaker/headphone.**
 
 | Komponen | Default |
 |---|---|
@@ -13,6 +13,11 @@ Aplikasi desktop untuk menemani kamu bekerja sambil melatih percakapan bahasa In
 | TTS | Kokoro v1.0 INT8 melalui ONNX Runtime, suara Heart, tempo 1.05× |
 
 GPU dan PyTorch tidak diperlukan. Model suara diunduh saat pertama dipakai, kemudian digunakan dari cache lokal. DeepSeek tetap membutuhkan internet dan API key.
+
+**Edge TTS** tersedia sebagai pilihan tambahan. Engine ini memakai layanan online
+Microsoft, tanpa API key Microsoft dan tanpa perlu menginstal browser Edge.
+Teks yang akan diucapkan dikirim ke Microsoft; mikrofon/STT tetap lokal.
+Kitten dan Kokoro tetap tersedia untuk TTS lokal.
 
 Target perangkat: **Mac mini M4 Pro, RAM 24 GB**, serta **Lenovo ThinkPad X390, Intel Core i5 generasi 8 vPro, RAM 16 GB, Ubuntu 26.04 LTS**. UI, model lokal, dan `.app` diuji di macOS; pengujian langsung di X390 masih diperlukan.
 
@@ -103,6 +108,31 @@ TTS_THREADS=2
 
 KittenTTS Nano dan Moonshine tetap tersedia sebagai pilihan ringan. Suara Kitten dan Kokoro berbeda; nama suara harus sesuai engine. Jangan menggunakan `TTS_VOICE=Jasper` dengan Kokoro.
 
+### Memakai Edge TTS
+
+Setelah `git pull origin main` dan `bash scripts/setup.sh`, restart aplikasi.
+Jika memakai `.app` atau `.deb`, rebuild paket setelah memperbarui source.
+
+1. Klik **Pause session**.
+2. Pada baris Voice, pilih **Edge (online)**.
+3. Pilih suara, misalnya **Jenny**, **Emma**, atau **Guy**, lalu klik **Listen to sample**.
+4. Sesuaikan **Speaking speed**; default saat beralih ke Edge adalah 1.0×.
+5. Klik **Start session** untuk ngobrol menggunakan suara tersebut.
+
+Untuk menjadikan Edge default setelah restart:
+
+```dotenv
+TTS_MODEL=edge_tts
+TTS_VOICE=Jenny
+TTS_SPEED=1.0
+```
+
+Edge tidak mengunduh bobot model TTS. Preview bisa dicoba tanpa API key DeepSeek,
+tetapi tetap memerlukan internet dan mengirim teks contoh ke Microsoft.
+**Stop reply** membatalkan koneksi sintesis yang sedang berjalan.
+Jika layanan tidak tersedia, aplikasi menampilkan error; pilih Kokoro/Kitten untuk
+kembali memakai TTS lokal. Tidak ada penggantian engine otomatis tanpa pilihanmu.
+
 ## Tes mikrofon sebelum ngobrol
 
 1. Pause sesi, lalu pilih mikrofon fisik pada dropdown **Microphone**. Hindari perangkat audio virtual jika ingin memakai headset/mikrofon langsung.
@@ -128,9 +158,9 @@ bash scripts/run.sh --devices
 | Start / Pause session | Memulai percakapan atau menutup mikrofon |
 | Stop reply | Membatalkan request/jawaban dan menghentikan suara |
 | Focus / mute | Menghentikan jawaban, pemrosesan mikrofon, dan check-in |
-| Voice: Kokoro / Kitten | Memilih engine TTS ketika sesi berhenti |
+| Voice: Edge / Kokoro / Kitten | Memilih engine TTS ketika sesi berhenti |
 | Dropdown suara | Mengganti suara pada jawaban berikutnya |
-| Listen to sample | Mendengarkan contoh lokal tanpa API key/mikrofon |
+| Listen to sample | Mendengarkan contoh tanpa key DeepSeek/mikrofon; Edge memakai internet |
 | Speaking speed | Mengatur tempo 0.7×–1.3×, berlaku pada jawaban/preview berikutnya |
 | Recognition | Whisper Small/Base atau Moonshine Small/Tiny; ubah saat sesi berhenti |
 | Microphone / Test mic | Memilih input dan menguji transkrip lokal |
@@ -139,6 +169,11 @@ bash scripts/run.sh --devices
 | Send / Clear chat | Mengirim teks atau membersihkan konteks sesi aktif |
 
 Suara Kokoro: **Heart, Bella, Nicole, Sarah, Adam, Michael, Fenrir, Emma**. Emma memakai pelafalan Inggris British; pilihan lainnya memakai English US. Kitten: **Bella, Jasper, Luna, Bruno, Rosie, Hugo, Kiki, Leo**.
+
+Suara Edge: **Jenny, Emma, Aria, Guy, Andrew, Brian, Ava, Christopher** (English US),
+**Sonia, Ryan** (English British), serta **Natasha, William** (English Australia).
+Nama Emma di Edge dan Kokoro merujuk ke suara yang berbeda. Pilihan layanan
+dapat berubah; jika suatu suara tidak tersedia, coba suara Edge lainnya.
 
 Whisper mendekode segmen setelah jeda ucapan, sehingga tidak menampilkan transkrip kata demi kata saat kamu masih berbicara. Model `small.en` memakai CPU INT8 dan beam search; latensinya dapat lebih tinggi daripada Moonshine. Base tersedia untuk CPU laptop yang sibuk. Istilah khusus dapat dibantu melalui `STT_KEYTERMS`, default kosong.
 
@@ -162,7 +197,7 @@ Check-in default 90 detik. Ajakan yang tidak dijawab memperpanjang jeda menjadi 
 | `STT_END_PAUSE_SECONDS` | `0.65`, rentang 0.5–3 |
 | `STT_KEYTERMS` | Istilah dipisahkan koma, maksimal 50 istilah × 80 karakter; kosong untuk percakapan umum |
 | `MOONSHINE_ORT_SINGLE_THREAD` | `1`, inference native Moonshine satu thread |
-| `TTS_MODEL` | `kokoro_int8`; alternatif Kitten Nano/Micro/Mini ONNX |
+| `TTS_MODEL` | `kokoro_int8`; alternatif `edge_tts` atau Kitten Nano/Micro/Mini ONNX |
 | `TTS_VOICE` | `Heart`, harus cocok dengan engine |
 | `TTS_SPEED` | `1.05`, rentang 0.7–1.3 |
 | `TTS_THREADS` | `2`, rentang 1–4 |
@@ -196,7 +231,11 @@ bash scripts/run.sh --voice-test
 .venv/bin/python -m twotor.benchmark --turns 48
 ```
 
-Smoke test membuka UI sebentar tanpa audio/API. Voice test menyintesis dan mentranskripsikan tiga frasa tanpa mikrofon/playback/API. Benchmark lengkap memakai delapan frasa termasuk pasangan “test” dan “best”; laporan JSON berada di `artifacts/benchmark.json`.
+Smoke test membuka UI sebentar tanpa audio/API. Voice test menyintesis dan mentranskripsikan tiga frasa tanpa mikrofon, playback, atau DeepSeek. Benchmark lengkap memakai delapan frasa termasuk pasangan “test” dan “best”; laporan JSON berada di `artifacts/benchmark.json`.
+
+Pengecualian jaringan: jika `.env` memilih Edge, voice test/benchmark memakai
+Microsoft untuk menyintesis frasa uji, tanpa memanggil DeepSeek. Dengan Kokoro atau
+Kitten, sintesis tetap lokal setelah model diunduh.
 
 Perbandingan model:
 
@@ -261,6 +300,7 @@ Buka 2tor dari menu aplikasi atau `/opt/2tor/2tor`. Edit `~/.config/2tor/.env` u
 | Suara/model baru tidak muncul | Pull kode, setup ulang, dan rebuild `.app`/`.deb` bila memakai paket |
 | Kata “test” menjadi “best” | Pilih Whisper Small, tes mic fisik, periksa level; jangan menganggap uji sintetis menjamin aksen manusia |
 | Suara terasa pelan | Coba Kokoro Heart dan Speaking speed 1.05–1.15×; preview terlebih dahulu |
+| Edge tidak menghasilkan suara | Periksa internet, coba suara Edge lain, atau kembali ke TTS lokal |
 | Tidak ada transkrip | Tunggu Listening, nonaktifkan Focus, pastikan AI selesai dan input benar |
 | Low / quiet atau Clipping | Periksa input volume, jarak mikrofon, serta apakah perangkat virtual terpilih |
 | API invalid / HTTP 402 | Periksa key/file `.env` yang dipakai atau saldo akun API |
@@ -277,12 +317,17 @@ Setup masih memasang KittenML dengan `--no-deps` agar pilihan legacy ONNX tidak 
 
 Audio mikrofon tetap lokal dan tidak disimpan. Mode Test mic dan preview tidak memanggil DeepSeek. Percakapan mengirim transkrip dan konteks pendek ke endpoint yang dikonfigurasi. API key berada di environment/.env dan dikecualikan dari Git.
 
+Saat Edge dipilih, teks jawaban AI atau contoh suara juga dikirim ke layanan
+Microsoft untuk sintesis. Audio hasil Edge diterima sebagai MP3 dan di-decode
+di memori menjadi PCM mono 24 kHz; aplikasi tidak menyimpan MP3 tersebut.
+
 Riwayat default hanya di memori. `SAVE_HISTORY=1` menyimpan teks di `~/.local/share/2tor/history.sqlite3`; tidak dimuat otomatis pada sesi baru. Clear chat hanya membersihkan konteks aktif. Hapus file SQLite setelah menutup aplikasi jika ingin menghapus arsip.
 
 ## Referensi
 
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
 - [Kokoro ONNX](https://github.com/thewh1teagle/kokoro-onnx)
+- [Edge TTS](https://github.com/rany2/edge-tts)
 - [Moonshine](https://github.com/moonshine-ai/moonshine)
 - [KittenTTS ONNX ringan](https://github.com/KittenML/KittenTTS/blob/main/docs/onnx-models.md)
 - [DeepSeek API](https://api-docs.deepseek.com/api/create-chat-completion/)

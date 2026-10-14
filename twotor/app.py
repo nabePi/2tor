@@ -13,7 +13,9 @@ def main():
     parser.add_argument("--devices", action="store_true", help="List audio input/output devices")
     parser.add_argument("--smoke-test", action="store_true", help="Open UI briefly, no mic/API")
     parser.add_argument(
-        "--voice-test", action="store_true", help="Test packaged local voices, no mic/API"
+        "--voice-test",
+        action="store_true",
+        help="Test configured voices, no mic/DeepSeek (Edge is online)",
     )
     args = parser.parse_args()
     if args.devices:
@@ -111,6 +113,7 @@ def main():
             voice_row = QHBoxLayout()
             voice_row.addWidget(QLabel("Voice"))
             self.tts_engine = QComboBox()
+            self.tts_engine.addItem("Edge (online)", "edge_tts")
             self.tts_engine.addItem("Kokoro", "kokoro_int8")
             self.tts_engine.addItem("Kitten", "KittenML/kitten-tts-nano-0.8-int8")
             if self.tts_engine.findData(config.tts_model) < 0:
@@ -125,7 +128,7 @@ def main():
             self.voice.setCurrentText(config.voice)
             self.voice.currentTextChanged.connect(lambda name: self.engine.command("voice", name))
             self.preview = QPushButton("Listen to sample")
-            self.preview.setToolTip("Hear this voice locally, without a DeepSeek API key")
+            self.preview.setToolTip("Hear this voice without a DeepSeek key. Edge uses internet.")
             self.preview.clicked.connect(
                 lambda: self.engine.command("preview", self.voice.currentText())
             )
@@ -230,7 +233,11 @@ def main():
             clear.clicked.connect(lambda: self.engine.command("clear"))
             footer.addWidget(clear)
             footer.addStretch()
-            label = QLabel("Voice local · AI online")
+            label = self.voice_status = QLabel(
+                "Voice online · AI online"
+                if config.tts_model == "edge_tts"
+                else "Voice local · AI online"
+            )
             label.setObjectName("muted")
             footer.addWidget(label)
             layout.addLayout(footer)
@@ -337,6 +344,11 @@ def main():
                 elif name == "memory":
                     self.ram.setText(f"{data:.0f} MB")
                 elif name == "tts_changed":
+                    self.voice_status.setText(
+                        "Voice online · AI online"
+                        if self.engine.tts_model == "edge_tts"
+                        else "Voice local · AI online"
+                    )
                     self.voice.blockSignals(True)
                     self.voice.clear()
                     self.voice.addItems(data["voices"])

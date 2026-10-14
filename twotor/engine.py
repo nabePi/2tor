@@ -172,7 +172,7 @@ class Engine:
         if self.response_thread and self.response_thread.is_alive():
             raise RuntimeError("Previous reply is stopping. Wait briefly, then start again.")
         self.busy = False
-        self.emit("state", "Loading local voices…")
+        self.emit("state", "Loading voices…")
         if self.stt is None:
             self.stt = SpeechToText(
                 replace(self.config, stt_model=self.stt_model),
@@ -182,7 +182,12 @@ class Engine:
                 ),
             )
         if self.tts is None and not test:
-            self.emit("notice", "Loading local TTS; first run downloads the model.")
+            self.emit(
+                "notice",
+                "Edge TTS uses Microsoft's online service."
+                if self.tts_model == "edge_tts"
+                else "Loading local TTS; first run downloads the model.",
+            )
             self.tts = TextToSpeech(
                 replace(self.config, tts_model=self.tts_model, voice=self.voice, speed=self.speed)
             )
@@ -257,7 +262,7 @@ class Engine:
                         if text is None:
                             enqueue(audio_queue, None)
                             break
-                        audio = tts.generate(text, voice=voice, speed=speed)
+                        audio = tts.generate(text, voice=voice, speed=speed, cancel=cancel)
                         enqueue(audio_queue, audio)
                 except Exception as exc:
                     errors.append(f"Voice synthesis failed: {exc}")
@@ -353,7 +358,13 @@ class Engine:
             errors = []
             try:
                 if self.tts is None:
-                    self.emit("notice", "First preview downloads the local TTS model.", generation)
+                    self.emit(
+                        "notice",
+                        "Edge preview sends sample text to Microsoft."
+                        if self.tts_model == "edge_tts"
+                        else "First preview downloads the local TTS model.",
+                        generation,
+                    )
                     self.tts = TextToSpeech(
                         replace(
                             self.config,
@@ -370,7 +381,7 @@ class Engine:
                     f"Hi, I'm {voice}, your English conversation partner. "
                     "How is your day going? Let's practice a little English together."
                 )
-                audio = self.tts.generate(text, voice=voice, speed=speed)
+                audio = self.tts.generate(text, voice=voice, speed=speed, cancel=cancel)
                 if cancel.is_set():
                     return
                 self.emit("state", f"Previewing {voice}", generation)
@@ -469,7 +480,7 @@ class Engine:
                         if self.active or self.busy:
                             self.emit("notice", "Pause the session before changing TTS.")
                         elif (
-                            data in {"kokoro_int8", "KittenML/kitten-tts-nano-0.8-int8"}
+                            data in {"edge_tts", "kokoro_int8", "KittenML/kitten-tts-nano-0.8-int8"}
                             and data != self.tts_model
                         ):
                             self.tts = None
@@ -481,6 +492,11 @@ class Engine:
                                 "tts_changed",
                                 {"voices": self.voices, "voice": self.voice, "speed": self.speed},
                             )
+                            if data == "edge_tts":
+                                self.emit(
+                                    "notice",
+                                    "Edge TTS is online: spoken text is sent to Microsoft.",
+                                )
                     elif name == "voice":
                         if data in self.voices:
                             self.voice = data
